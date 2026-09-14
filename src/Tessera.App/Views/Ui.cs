@@ -38,11 +38,18 @@ public static class Ui
             foreach(var text in row.Children.OfType<TextBlock>()) { text.Foreground = ThemeManager.Brush("AccentInk"); text.FontSize = 11; text.FontWeight = FontWeight.SemiBold; }
             foreach(var path in row.Children.OfType<Path>()) path.Stroke = ThemeManager.Brush("AccentInk");
         }
+        foreach(var text in row.Children.OfType<TextBlock>())
+        {
+            text.Bind(TextBlock.FontSizeProperty, new Avalonia.Data.Binding("FontSize") { Source = button });
+            text.Bind(TextBlock.ForegroundProperty, new Avalonia.Data.Binding("Foreground") { Source = button });
+        }
         button.Click += (_, _) => action(); return button;
     }
     public static Button IconButton(string icon, string tooltip, Action action)
     {
-        var b = Button("", icon, action, "icon"); ToolTip.SetTip(b, tooltip); AutomationProperties.SetName(b, tooltip); return b;
+        var b = Button("", icon, action, "icon");
+        if(icon == "close") { b.Content = Icon(icon, 11); b.Width = 24; b.Height = 26; }
+        ToolTip.SetTip(b, tooltip); AutomationProperties.SetName(b, tooltip); return b;
     }
     public static Border Card(Control child, Thickness? padding = null) => new() { Child = child, Padding = padding ?? new Thickness(16), BorderBrush = ThemeManager.Brush("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Background = ThemeManager.Brush("Surface") };
     public static StackPanel Stack(params Control[] children) { var s = new StackPanel { Spacing = 12 }; foreach (var c in children) s.Children.Add(c); return s; }

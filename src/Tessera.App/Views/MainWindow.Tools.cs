@@ -20,7 +20,13 @@ public sealed partial class MainWindow
     private void BuildTools()
     {
         var tabs=Q<StackPanel>("ToolTabs");tabs.Children.Clear();
-        foreach(var (name,icon) in new[]{("Commands","code"),("History","history"),("Files","folder"),("Timeline","record"),("Notes","note")})
+        if(Shell.Data.Preferences.ToolsOnRight)
+        {
+            var select = new ComboBox { ItemsSource = new[] { "Commands", "History", "Files", "Timeline", "Notes" }, SelectedItem = Shell.Data.Preferences.Tool, Width = 145, MinHeight = 28 };
+            select.SelectionChanged += (_, _) => { if(select.SelectedItem is string name && name != Shell.Data.Preferences.Tool) Shell.SetTool(name); };
+            tabs.Children.Add(select);
+        }
+        else foreach(var (name,icon) in new[]{("Commands","code"),("History","history"),("Files","folder"),("Timeline","record"),("Notes","note")})
         {
             var button=Ui.Button(name,icon,()=>Shell.SetTool(name));button.FontSize=10;if(Shell.Data.Preferences.Tool==name)button.Classes.Add("selected");tabs.Children.Add(button);
         }
@@ -35,13 +41,13 @@ public sealed partial class MainWindow
     }
     private Control BuildCommands()
     {
-        var grid=new UniformGrid{Columns=Shell.Data.Preferences.ToolsOnRight?1:3};
+        var grid=new UniformGrid{Columns=Shell.Data.Preferences.ToolsOnRight?1:3,VerticalAlignment=VerticalAlignment.Top};
         foreach(var snippet in Shell.Data.Snippets)
         {
             var category=Ui.Text(snippet.Category,8,"Faint");category.LetterSpacing=1.2;
             var command=Ui.Text(snippet.Command,10,"Muted");command.FontFamily=new FontFamily("monospace");command.TextTrimming=TextTrimming.CharacterEllipsis;
             var insert=Ui.IconButton("right","Insert command without executing",()=>Run(()=>{var session=Shell.ActiveSession??throw new InvalidOperationException("Open a terminal first.");session.Send(snippet.Command);session.Terminal.Focus();Shell.Report("Command inserted. Press Enter in the terminal to execute.");return Task.CompletedTask;}));
-            var card=Ui.Card(Ui.Row("*,Auto",Ui.Stack(category,Ui.Text(snippet.Name,12),command),insert),new Thickness(14));card.Margin=new Thickness(0,0,12,10);
+            var card=Ui.Card(Ui.Row("*,Auto",Ui.Stack(category,Ui.Text(snippet.Name,12),command),insert),new Thickness(14));card.Margin=new Thickness(0,0,12,10);card.Height=108;
             card.ContextMenu=new ContextMenu{ItemsSource=new[]{new MenuItem{Header="Edit command",Command=new Services.AppCommand("edit","Edit","","","",()=>{EditSnippet(snippet);return Task.CompletedTask;},ex=>ShowError(ex.Message))},new MenuItem{Header="Remove command",Command=new Services.AppCommand("remove","Remove","","","",()=>{Shell.RemoveSnippet(snippet.Id);return Task.CompletedTask;},ex=>ShowError(ex.Message))}}};grid.Children.Add(card);
         }
         if(Shell.Data.Snippets.Length==0)grid.Children.Add(Ui.Button("Save a reusable command","add",()=>EditSnippet()));
@@ -64,6 +70,7 @@ public sealed partial class MainWindow
         if(Shell.CommandHistory.Count==0)
         {
             list.Children.Add(Ui.Text("Your completed commands will appear here.",14));
+            list.Children.Add(CommandButton("shell-integration"));
             var text=Ui.Text("History uses RoyalTerminal shell-integration events, not a keylogger. Enable shell integration in your shell; this list stays empty until completed command events are received.",11,"Muted");text.TextWrapping=TextWrapping.Wrap;list.Children.Add(text);
         }
         foreach(var entry in Shell.CommandHistory.Take(100))

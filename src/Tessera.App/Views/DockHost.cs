@@ -176,7 +176,7 @@ public sealed class DockHost : Grid
             bool Inside(DockNode child) => Layout.Groups(child).Any(g => g.Id == _shell.ActiveGroupId);
             return (Inside(split.First) ? Find(split.First) : Find(split.Second)) ?? (split.Axis == axis ? split : null);
         }
-        var split = Find(_shell.Active.Root); if(split is null) return; _shell.Apply(Layout.Resize(_shell.Active, split.Id, split.Ratio + delta), false);
+        var split = Find(_shell.Active.Root); if(split is null) return; var first = Layout.Groups(split.First).Any(g => g.Id == _shell.ActiveGroupId); _shell.Apply(Layout.Resize(_shell.Active, split.Id, split.Ratio + (first ? delta : -delta)), false);
     }
     public void DetachAll() { foreach(var host in _terminalHosts) host.Content = null; _terminalHosts.Clear(); }
 }

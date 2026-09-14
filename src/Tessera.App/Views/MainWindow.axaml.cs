@@ -34,6 +34,7 @@ public sealed partial class MainWindow : Window
         Shell = new ShellController(designMode, directory);
         _dock = new DockHost(this, Shell); Q<ContentControl>("DockSurface").Content = _dock;
         ConfigureCommands();
+        RegisterAdvancedCommands();
         Shell.SessionCreated += ConfigureSession;
         Shell.Profiles.Saved += () =>
         {
@@ -98,7 +99,8 @@ public sealed partial class MainWindow : Window
         session.Terminal.CloseRequested += (_, _) => Dispatcher.UIThread.Post(() => Run(() => CloseTabAsync(session.Id)));
         session.Terminal.TerminalFontSize = Shell.Data.Preferences.FontSize * .75;
         if(!string.IsNullOrWhiteSpace(Shell.Data.Preferences.FontFamily)) session.Terminal.FontFamilyName = Shell.Data.Preferences.FontFamily;
-        session.Terminal.PasteSafetyPolicy = TerminalPasteSafetyPolicy.ConfirmUnsafe;
+        session.Terminal.PasteSafetyPolicy = Enum.TryParse<TerminalPasteSafetyPolicy>(session.Profile.Behavior.PasteSafetyPolicy, true, out var paste) && paste != TerminalPasteSafetyPolicy.None ? paste : TerminalPasteSafetyPolicy.ConfirmUnsafe;
+        session.Terminal.ShaderAnimationEnabled = !Shell.Data.Preferences.ReducedMotion;
         session.Terminal.UnsafePasteHandler = async context =>
         {
             if(session.Locked || session.IsReplay) return TerminalPasteSafetyDecision.Cancel;
@@ -184,6 +186,8 @@ public sealed partial class MainWindow : Window
         Q<TextBlock>("WorkspaceTitle").Text = Shell.Active.Name; Q<TextBlock>("WorkspaceDescription").Text = Shell.Active.Description;
         Q<TextBlock>("WorkspaceSigil").Text = Shell.Active.Name[..1].ToUpperInvariant();
         Q<Button>("ThemeButton").Content = Ui.Icon("sun");
+        if(Q<Button>("PaletteButton").Content is Grid paletteGrid)
+            paletteGrid.Children.OfType<TextBlock>().Last().Text = OperatingSystem.IsMacOS() ? "⌘ K" : "Ctrl K";
         Q<TextBlock>("Avatar").Text = Shell.DesignMode ? "WS" : new string(Environment.UserName.Where(char.IsLetterOrDigit).Take(2).ToArray()).ToUpperInvariant();
         _dock.Rebuild(); BuildTools(); UpdateResponsiveLayout(); RefreshStatus();
     }

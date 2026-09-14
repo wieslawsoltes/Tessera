@@ -87,12 +87,18 @@ public sealed class ShellController : IDisposable
         }
         ActiveDocumentId = Layout.Groups(Active.Root).FirstOrDefault()?.Active;
         Initialized = true; Changed?.Invoke(true);
+        // Size controls before first output, rather than shrinking a populated 120x36 fixture.
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
         // Restoration rebuilds layout. Remote processes are never silently reconnected.
         if(DesignMode || Data.Preferences.RestoreLocalSessions)
             foreach(var document in Active.Documents.Values)
             {
-                var session = GetSession(document);
-                if(!document.IsReplay && (DesignMode || session.Profile.Transport.TransportId == TerminalTransportIds.Pty)) await session.EnsureStartedAsync();
+                try
+                {
+                    var session = GetSession(document);
+                    if(!document.IsReplay && (DesignMode || session.Profile.Transport.TransportId == TerminalTransportIds.Pty)) await session.EnsureStartedAsync();
+                }
+                catch(InvalidOperationException ex) { Report(ex.Message); }
             }
         Notify(false);
     }
@@ -209,7 +215,7 @@ public sealed class ShellController : IDisposable
         ThemeManager.Apply(preferences.Theme);
         foreach(var session in Sessions.All)
         {
-            ThemeManager.ApplyTerminal(session.Terminal); session.Terminal.TerminalFontSize = preferences.FontSize * .75;
+            ThemeManager.ApplyTerminal(session.Terminal); session.Terminal.BackgroundOpacityEnabled = session.Profile.Appearance.BackgroundOpacityEnabled; session.Terminal.ShaderAnimationEnabled = !preferences.ReducedMotion; session.Terminal.TerminalFontSize = preferences.FontSize * .75;
             if(!string.IsNullOrWhiteSpace(preferences.FontFamily)) session.Terminal.FontFamilyName = preferences.FontFamily;
         }
         Notify(true);

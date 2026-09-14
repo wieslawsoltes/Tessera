@@ -124,6 +124,8 @@ public sealed partial class MainWindow
     public void ShowProfiles(string? selected=null)
     {
         var state=Shell.Profiles.CreateEditor(selected);var panel=new TerminalSettingsPanel{DataContext=state};
+        foreach(var pair in new[] { ("BackgroundBrush", "Surface"), ("ContentBackgroundBrush", "TerminalBg"), ("BorderBrush", "Line"), ("DividerBrush", "Line"), ("SecondaryTextBrush", "Muted"), ("SubtleTextBrush", "Faint"), ("CardBorderBrush", "Line") })
+            panel.Resources["TerminalSettings.Panel." + pair.Item1] = ThemeManager.Brush(pair.Item2);
         var production=new CheckBox{Content="Production connection · input locked on every connect · never broadcast",IsChecked=state.SelectedProfile is {} item&&Shell.Profiles.Production.Contains(item.Id)};
         state.PropertyChanged += (_, e) =>
         {

@@ -119,6 +119,8 @@ public sealed class SessionRuntime : IDisposable
             renderer.EnableLigatures = profile.Behavior.EnableLigatures;
         }
         ThemeManager.ApplyTerminal(Terminal);
+        Terminal.BackgroundOpacityEnabled = a.BackgroundOpacityEnabled;
+        Terminal.PasteSafetyPolicy = Enum.TryParse<TerminalPasteSafetyPolicy>(profile.Behavior.PasteSafetyPolicy, true, out var paste) && paste != TerminalPasteSafetyPolicy.None ? paste : TerminalPasteSafetyPolicy.ConfirmUnsafe;
     }
     public Task EnsureStartedAsync() => _startup ??= StartAsync(restart: false);
     public Task ReconnectAsync() => StartAsync(restart: true);
