@@ -11,6 +11,7 @@ concurrency:
 jobs:
   core-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -26,31 +27,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet build src/Tessera.App/Tessera.App.csproj -c Release
-      - run: dotnet publish src/Tessera.App/Tessera.App.csproj -c Release --no-restore -o artifacts/app
+      - name: Build native application
+        run: dotnet build src/Tessera.App/Tessera.App.csproj -c Release
+      - name: Native UI, visual, and real PTY tests
+        run: dotnet test tests/Tessera.App.Tests/Tessera.App.Tests.csproj -c Release --logger trx --blame-hang-timeout 2m
+      - name: Publish self-contained unsigned application
+        if: ${{ !cancelled() }}
+        run: dotnet publish src/Tessera.App/Tessera.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
-          name: Tessera-${{ matrix.os }}-unsigned
+          name: Tessera-${{ matrix.rid }}-unsigned
           path: artifacts/app
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-validation-${{ matrix.rid }}
+          path: |
+            artifacts/screenshots
+            **/TestResults/*.trx
   source:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Archive exact source tree
+        run: git archive --format=zip HEAD -o Tessera-native-source.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Tessera-source
-          path: |
-            src
-            tests
-            tools
-            *.props
-            *.slnx
-            *.md
-            global.json
+          path: Tessera-native-source.zip
