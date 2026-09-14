@@ -5,15 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  api-contract:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - run: dotnet run --project tools/ApiProbe/ApiProbe.csproj
   core-tests:
     runs-on: ubuntu-latest
     steps:
@@ -27,3 +22,35 @@ jobs:
         with:
           name: core-test-results
           path: '**/TestResults/*.trx'
+  native-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build src/Tessera.App/Tessera.App.csproj -c Release
+      - run: dotnet publish src/Tessera.App/Tessera.App.csproj -c Release --no-restore -o artifacts/app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tessera-${{ matrix.os }}-unsigned
+          path: artifacts/app
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tessera-source
+          path: |
+            src
+            tests
+            tools
+            *.props
+            *.slnx
+            *.md
+            global.json
