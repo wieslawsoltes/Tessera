@@ -1,0 +1,35 @@
+name: Offline acceptance kit
+on:
+  push:
+    paths: ['.github/workflows/devkit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  kit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Tessera.slnx
+      - name: Export public SDK, packages and upstream API source
+        shell: bash
+        run: |
+          mkdir -p kit
+          curl -fLsS https://builds.dotnet.microsoft.com/dotnet/Sdk/$(dotnet --version)/dotnet-sdk-$(dotnet --version)-linux-x64.tar.gz -o kit/sdk.tar.gz
+          tar -C "$HOME/.nuget" -czf kit/packages.tar.gz packages
+          git clone --depth 1 https://github.com/royalapplications/RoyalTerminal.git kit/RoyalTerminal
+          git clone --depth 1 https://github.com/sshnet/SSH.NET.git kit/SSH.NET
+          git clone --depth 1 https://github.com/AvaloniaUI/Avalonia.git kit/Avalonia
+          rm -rf kit/RoyalTerminal/.git kit/SSH.NET/.git kit/Avalonia/.git
+          tar -C kit -czf kit/apis.tar.gz RoyalTerminal SSH.NET Avalonia
+          rm -rf kit/RoyalTerminal kit/SSH.NET kit/Avalonia
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-acceptance-kit
+          path: kit/*.tar.gz
+          compression-level: 0
+          retention-days: 3
