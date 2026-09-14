@@ -127,7 +127,7 @@ public sealed partial class MainWindow
         var production=new CheckBox{Content="Production connection · input locked on every connect · never broadcast",IsChecked=state.SelectedProfile is {} item&&Shell.Profiles.Production.Contains(item.Id)};
         state.PropertyChanged += (_, e) =>
         {
-            if(e.PropertyName == nameof(state.SelectedProfile))
+            if(e.Property.Name == nameof(state.SelectedProfile))
                 production.IsChecked = state.SelectedProfile is {} selectedProfile && Shell.Profiles.Production.Contains(selectedProfile.Id);
         };
         async Task Save()
