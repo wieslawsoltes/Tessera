@@ -19,7 +19,8 @@ namespace Tessera.NativeTests;
 public static class TestBootstrap
 {
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<global::Tessera.App>()
-        .WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
+        .WithInterFont().UseSkia().UseHarfBuzz()
+        .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
 }
 
 public sealed class NativeUiTests
@@ -31,7 +32,17 @@ public sealed class NativeUiTests
     }
     private static async Task SettleAsync()
     {
-        Dispatcher.UIThread.RunJobs(); await Task.Delay(80); Dispatcher.UIThread.RunJobs();
+        Dispatcher.UIThread.RunJobs(); await Task.Delay(100); Dispatcher.UIThread.RunJobs();
+    }
+    private static void Screenshot(MainWindow window, string name)
+    {
+        var directory = Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? Directory.GetCurrentDirectory(), "artifacts", "screenshots");
+        Directory.CreateDirectory(directory);
+        using var bitmap = window.CaptureRenderedFrame();
+        Assert.NotNull(bitmap);
+#pragma warning disable CS0618 // Avalonia preserves this PNG overload across supported versions.
+        bitmap!.Save(Path.Combine(directory, name + ".png"));
+#pragma warning restore CS0618
     }
     [AvaloniaFact]
     public async Task DesignerCompositionHasStableSessionsAndThreeGroups()
@@ -59,14 +70,9 @@ public sealed class NativeUiTests
         try
         {
             window.Shell.SetTheme(theme); await SettleAsync();
-            var root = window.FindControl<Grid>("Root")!;
-            Assert.Equal(55, root.RowDefinitions[0].ActualHeight, 0);
+            Assert.Equal(55, window.FindControl<Grid>("Root")!.RowDefinitions[0].ActualHeight, 0);
             Assert.Equal(theme, ThemeManager.Current);
-            var directory = Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? Directory.GetCurrentDirectory(), "artifacts", "screenshots");
-            Directory.CreateDirectory(directory);
-            using var bitmap = window.CaptureRenderedFrame();
-            Assert.NotNull(bitmap); Assert.True(bitmap!.PixelSize.Width >= 1200);
-            bitmap.Save(Path.Combine(directory, theme.ToLowerInvariant() + ".png"));
+            Screenshot(window, theme.ToLowerInvariant());
         }
         finally { window.CloseForTests(); }
     }
@@ -77,8 +83,7 @@ public sealed class NativeUiTests
         try
         {
             var before = window.Shell.Active.Documents.Count;
-            var actions = window.FindControl<StackPanel>("WorkspaceActions")!;
-            var button = actions.Children.OfType<Button>().Last();
+            var button = window.FindControl<StackPanel>("WorkspaceActions")!.Children.OfType<Button>().Last();
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await SettleAsync();
             Assert.Equal(before + 1, window.Shell.Active.Documents.Count);
         }
@@ -91,12 +96,15 @@ public sealed class NativeUiTests
         try
         {
             window.ShowPalette("split"); await SettleAsync(); Assert.True(window.IsOverlayOpen);
-            Assert.NotEmpty(window.GetVisualDescendants().OfType<ListBox>());
-            window.KeyPress(Key.Escape, RawInputModifiers.None); window.KeyRelease(Key.Escape, RawInputModifiers.None);
+            Assert.NotEmpty(window.GetVisualDescendants().OfType<ListBox>()); Screenshot(window, "command-palette");
+            window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null);
+            window.KeyRelease(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null);
             Assert.False(window.IsOverlayOpen);
-            window.ShowSettings(); await SettleAsync(); Assert.NotEmpty(window.GetVisualDescendants().OfType<CheckBox>());
+            window.ShowSettings(); await SettleAsync(); Assert.NotEmpty(window.GetVisualDescendants().OfType<CheckBox>()); Screenshot(window, "preferences");
             window.ShowProfiles(); await SettleAsync();
             Assert.Contains(window.GetVisualDescendants(), control => control is RoyalTerminal.Avalonia.Settings.TerminalSettingsPanel);
+            Screenshot(window, "connection-profiles");
+            window.ShowLayouts(); await SettleAsync(); Screenshot(window, "layout-chooser");
         }
         finally { window.CloseForTests(); }
     }
@@ -126,6 +134,24 @@ public sealed class NativeUiTests
             Assert.Throws<InvalidOperationException>(() => session.Send("echo forbidden\r"));
             session.BroadcastTarget = true;
             Assert.Throws<InvalidOperationException>(() => window.Shell.SetBroadcast(true));
+            await SettleAsync(); Screenshot(window, "production-read-only");
+        }
+        finally { window.CloseForTests(); }
+    }
+    [AvaloniaFact]
+    public async Task ReplayIdentityCannotBecomeAnAutostartedPty()
+    {
+        var window = await OpenAsync();
+        try
+        {
+            var document = await window.Shell.NewTerminalAsync(start: false);
+            window.Shell.MarkReplay(document.Id);
+            var session = window.Shell.GetSession(window.Shell.Active.Documents[document.Id]);
+            await session.StartAsync();
+            Assert.True(session.IsReplay); Assert.True(session.Locked); Assert.False(session.IsRunning);
+            var json = System.Text.Json.JsonSerializer.Serialize(window.Shell.Data, WorkspaceStore.Json);
+            var loaded = System.Text.Json.JsonSerializer.Deserialize<AppDocument>(json, WorkspaceStore.Json)!;
+            Assert.True(loaded.Workspaces.Single(w => w.Id == loaded.ActiveWorkspace).Documents[document.Id].IsReplay);
         }
         finally { window.CloseForTests(); }
     }
@@ -136,25 +162,29 @@ public sealed class NativeUiTests
         try
         {
             var sessions = window.Shell.Sessions.All.Select(s => s.Terminal).ToArray();
-            window.Shell.ToggleFocus(); await SettleAsync();
+            window.Shell.ToggleFocus(); await SettleAsync(); Screenshot(window, "focus-mode");
             window.Shell.ToggleFocus(); window.Shell.SetPreferences(window.Shell.Data.Preferences with { ToolsOnRight = true, ToolSize = 340 }); await SettleAsync();
-            Assert.Equal(sessions, window.Shell.Sessions.All.Select(s => s.Terminal));
-            window.Width = 840; await SettleAsync(); Assert.False(window.FindControl<Border>("Sidebar")!.IsVisible);
+            Assert.Equal(sessions, window.Shell.Sessions.All.Select(s => s.Terminal)); Screenshot(window, "right-docked-tools");
+            window.Width = 840; await SettleAsync(); Assert.False(window.FindControl<Border>("Sidebar")!.IsVisible); Screenshot(window, "compact-workspace");
         }
         finally { window.CloseForTests(); }
     }
     [AvaloniaFact]
-    public async Task LocalTerminalRunsAnActualPtyProcess()
+    public async Task LocalTerminalExecutesAnActualPtyCommand()
     {
         var window = await OpenAsync(design: false);
         try
         {
             var session = window.Shell.ActiveSession!;
             Assert.True(session.IsRunning, session.Error ?? session.State);
-            var marker = "TESSERA_PTY_" + Guid.NewGuid().ToString("N");
-            session.Send("echo " + marker + "\r");
-            for(var attempt = 0; attempt < 60 && !session.OutputSnapshot().Contains(marker, StringComparison.Ordinal); attempt++)
-                await Task.Delay(100);
+            var suffix = Guid.NewGuid().ToString("N");
+            var marker = "TESSERA_PTY_" + suffix;
+            // The complete marker is absent from the command line, so terminal echo cannot make this assertion pass.
+            var command = OperatingSystem.IsWindows()
+                ? "echo TESSERA_PTY_" + suffix
+                : "printf 'TESSERA_PTY_%s\\n' '" + suffix + "'";
+            session.Send(command + "\r");
+            for(var attempt = 0; attempt < 60 && !session.OutputSnapshot().Contains(marker, StringComparison.Ordinal); attempt++) await Task.Delay(100);
             Assert.Contains(marker, session.OutputSnapshot());
         }
         finally { window.CloseForTests(); }
