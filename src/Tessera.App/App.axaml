@@ -1,0 +1,7 @@
+<Application xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Tessera.App" RequestedThemeVariant="Dark">
+ <Application.Styles>
+  <FluentTheme />
+  <StyleInclude Source="avares://RoyalTerminal.Avalonia.Settings/Settings/TerminalSettingsPanel.axaml" />
+  <StyleInclude Source="avares://Tessera/Styles/Shell.axaml" />
+ </Application.Styles>
+</Application>

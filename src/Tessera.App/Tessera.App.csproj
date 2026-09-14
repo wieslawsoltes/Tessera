@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><AssemblyName>Tessera</AssemblyName><RootNamespace>Tessera</RootNamespace><AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault><ApplicationManifest>app.manifest</ApplicationManifest></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Tessera.Core/Tessera.Core.csproj"/><PackageReference Include="Avalonia.Desktop" Version="12.1.1"/><PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1"/><PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1"/><PackageReference Include="RoyalApps.RoyalTerminal.Avalonia" Version="0.5.2"/><PackageReference Include="RoyalApps.RoyalTerminal.Avalonia.Settings" Version="0.5.2"/><PackageReference Include="RoyalApps.RoyalTerminal.Terminal.Vt.Ghostty" Version="0.5.2"/><PackageReference Include="RoyalApps.RoyalTerminal.Terminal.Transport.Ssh.SshNet.Agent" Version="0.5.2"/></ItemGroup>
+</Project>
