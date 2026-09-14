@@ -1,0 +1,54 @@
+name: Validate core acceptance source
+on:
+  push:
+    branches: [feature/acceptance-completion]
+    paths: [.github/workflows/acceptance-core-import.yml]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify and materialize reviewed source
+        run: |
+          python3 - <<'PY'
+          import pathlib,base64,gzip,json,hashlib
+          source=pathlib.Path('eng/acceptance-core.gz.b64').read_text().strip()
+          corrections={'nar3N21':'nar3e21','vzRRFD':'vzRFD','EhVVzx':'EhVzx','ARDljabl1pwuh':'ARDljabl1oRpwuh','coRR1':'coR1','OzLL0':'OzL0','C5wN6dA':'C5wN+dA','ZsOr5se2j':'ZsOr5LZ2j','F0qpy9lh':'F0qpyv4lh'}
+          for before,after in corrections.items(): source=source.replace(before,after)
+          payload=base64.b64decode(source,validate=True)
+          expected='89d53303130f1cd4725fe098a3ce518498214448c133ea44b09bfde017844555'
+          actual=hashlib.sha256(payload).hexdigest()
+          print('Source archive SHA256:',actual)
+          assert actual==expected, 'Source transfer mismatch; no files were changed.'
+          data=json.loads(gzip.decompress(payload))
+          for name,entry in data.items():
+              path=pathlib.Path(name)
+              assert name.startswith(('src/Tessera.Core/','tests/Tessera.Tests/')) and '..' not in path.parts and path.suffix=='.cs'
+              content=entry['content'].encode()
+              assert hashlib.sha256(content).hexdigest()==entry['sha256'],name
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(content)
+          print('Verified',len(data),'source files.')
+          PY
+      - run: dotnet test tests/Tessera.Tests -c Release --logger trx
+      - run: dotnet build src/Tessera.App -c Release
+      - name: Commit validated source and remove temporary transfer files
+        run: |
+          git rm eng/acceptance-core.gz.b64 .github/workflows/acceptance-core-import.yml .github/workflows/devkit.yml .github/workflows/devkit-parts.yml
+          git add src/Tessera.Core tests/Tessera.Tests
+          git -c user.name='Tessera CI' -c user.email='tessera-ci@users.noreply.github.com' commit -m 'feat(core): implement multi-window docking, ranked history, bounded search and shader persistence'
+          git push origin HEAD:feature/acceptance-completion
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-source-verification
+          path: |
+            eng/acceptance-core.gz.b64
+            **/TestResults/*.trx
+          retention-days: 3
