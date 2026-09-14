@@ -1,7 +1,6 @@
 using System.Text;
 using Avalonia;
 using Avalonia.Input;
-using Avalonia.Interactivity;
 using RoyalTerminal.Avalonia.Controls;
 using RoyalTerminal.Avalonia.Capture;
 using RoyalTerminal.Avalonia.Rendering;
@@ -13,25 +12,44 @@ using Tessera.Core;
 
 namespace Tessera.Services;
 
-/// <summary>Input lock is runtime policy. It is never restored in an unlocked state from disk.</summary>
+/// <summary>
+/// Enforces read-only policy before input encoding, including RoyalTerminal's
+/// handled-event fallback routes. UI event flags alone are not a security boundary.
+/// </summary>
+public sealed class GuardedTerminalInputAdapter : ITerminalInputAdapter
+{
+    private readonly DefaultTerminalInputAdapter _inner = new();
+    public bool Locked { get; set; }
+    public bool HandleKeyDown(KeyEventArgs e, ITerminalSessionService service, IVtProcessor? processor)
+    {
+        if(Locked) { e.Handled = true; return true; }
+        return _inner.HandleKeyDown(e, service, processor);
+    }
+    public bool HandleKeyUp(KeyEventArgs e, ITerminalSessionService service)
+    {
+        if(Locked) { e.Handled = true; return true; }
+        return _inner.HandleKeyUp(e, service);
+    }
+    public bool HandleTextInput(TextInputEventArgs e, ITerminalSessionService service)
+    {
+        if(Locked) { e.Handled = true; return true; }
+        return _inner.HandleTextInput(e, service);
+    }
+}
+
 public sealed class GuardedTerminal : TerminalControl
 {
-    public bool InputLocked { get; set; }
+    private readonly GuardedTerminalInputAdapter _input;
+    public bool InputLocked { get => _input.Locked; set => _input.Locked = value; }
     protected override Type StyleKeyOverride => typeof(TerminalControl);
-    public GuardedTerminal(ISshCredentialProvider credentials) : base(
-        new TerminalSessionService(),
-        new DefaultTerminalInputAdapter(),
-        new DefaultTerminalSelectionService(),
-        new DefaultTerminalScrollService(),
-        new DefaultVtProcessorFactory([new GhosttyVtProcessorProvider()]),
-        new DefaultPtyFactory(),
-        credentials,
-        new KnownHostsSshHostKeyValidator(),
-        transportFactory: null)
+    public GuardedTerminal(ISshCredentialProvider credentials) : this(credentials, new GuardedTerminalInputAdapter()) { }
+    private GuardedTerminal(ISshCredentialProvider credentials, GuardedTerminalInputAdapter input) : base(
+        new TerminalSessionService(), input,
+        new DefaultTerminalSelectionService(), new DefaultTerminalScrollService(),
+        new DefaultVtProcessorFactory([new GhosttyVtProcessorProvider()]), new DefaultPtyFactory(),
+        credentials, new KnownHostsSshHostKeyValidator(), transportFactory: null)
     {
-        AddHandler(KeyDownEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
-        AddHandler(KeyUpEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
-        AddHandler(TextInputEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
+        _input = input;
     }
 }
 
