@@ -43,16 +43,19 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build native application
         run: dotnet build src/Tessera.App/Tessera.App.csproj -c Release
-      - name: Native UI, visual, and real PTY tests
+      - name: Native UI, visual, keyboard and real PTY tests
         run: dotnet test tests/Tessera.App.Tests/Tessera.App.Tests.csproj -c Release --logger trx --blame-hang-timeout 2m
       - name: Publish self-contained unsigned application
-        if: ${{ !cancelled() }}
         run: dotnet publish src/Tessera.App/Tessera.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
+      - name: Collect dependency notices
+        run: python tools/collect_notices.py
+      - name: Package native alpha with revision and checksums
+        run: python tools/package.py --rid ${{ matrix.rid }}
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
         with:
           name: Tessera-${{ matrix.rid }}-unsigned
-          path: artifacts/app
+          compression-level: 0
+          path: artifacts/packages
       - uses: actions/upload-artifact@v4
         if: always()
         with:

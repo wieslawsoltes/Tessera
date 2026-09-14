@@ -32,11 +32,9 @@ public sealed class NativeInteractionRegressionTests
             var input = overlay.GetVisualDescendants().OfType<TextBox>().Single();
             foreach(var query in new[] { "s", "sh", "shader", "no-such-command-94398", "", "split", "layout", "" })
             {
-                input.Text = query; await SettleAsync();
-                Assert.True(window.IsOverlayOpen);
+                input.Text = query; await SettleAsync(); Assert.True(window.IsOverlayOpen);
             }
-            var results = overlay.GetVisualDescendants().OfType<ListBox>().Single();
-            Assert.True(results.ItemCount > 20);
+            Assert.True(overlay.GetVisualDescendants().OfType<ListBox>().Single().ItemCount > 20);
         }
         finally { window.CloseForTests(); }
     }
@@ -50,11 +48,9 @@ public sealed class NativeInteractionRegressionTests
             var id = window.Shell.ActiveDocumentId!.Value;
             var terminal = window.Shell.ActiveSession!.Terminal;
             await window.Commands["float"].ExecuteAsync(); await SettleAsync();
-            Assert.True(window.IsFloating(id));
-            Assert.Same(terminal, window.Shell.Sessions.Find(id)!.Terminal);
+            Assert.True(window.IsFloating(id)); Assert.Same(terminal, window.Shell.Sessions.Find(id)!.Terminal);
             window.ReturnFloating(id); await SettleAsync();
-            Assert.False(window.IsFloating(id));
-            Assert.Same(terminal, window.Shell.Sessions.Find(id)!.Terminal);
+            Assert.False(window.IsFloating(id)); Assert.Same(terminal, window.Shell.Sessions.Find(id)!.Terminal);
         }
         finally { window.CloseForTests(); }
     }
@@ -71,12 +67,11 @@ public sealed class NativeInteractionRegressionTests
             var sent = new ConcurrentQueue<byte[]>();
             session.Terminal.TerminalSessionService.InputSent += (_, e) => sent.Enqueue(e.Data.ToArray());
             window.KeyPress(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
-            window.TextInput("LOCKED_INPUT_MUST_NOT_REACH_PTY");
+            session.Terminal.RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "LOCKED_INPUT_MUST_NOT_REACH_PTY" });
             window.KeyRelease(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
             window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
             window.KeyRelease(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
-            await SettleAsync();
-            Assert.Empty(sent);
+            await SettleAsync(); Assert.Empty(sent);
         }
         finally { window.CloseForTests(); }
     }
@@ -93,7 +88,8 @@ public sealed class NativeInteractionRegressionTests
             preset.SelectedIndex = 1; await SettleAsync();
             var apply = overlay.GetVisualDescendants().OfType<Button>().Single(b => AutomationProperties.GetName(b) == "Validate & apply");
             apply.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await SettleAsync();
-            Assert.NotEmpty(window.Shell.ActiveSession!.Terminal.ShaderSources);
+            var sources = window.Shell.ActiveSession!.Terminal.ShaderSources;
+            Assert.NotNull(sources); Assert.NotEmpty(sources!);
         }
         finally { window.CloseForTests(); }
     }
