@@ -5,7 +5,10 @@ using Avalonia.Interactivity;
 using RoyalTerminal.Avalonia.Controls;
 using RoyalTerminal.Avalonia.Capture;
 using RoyalTerminal.Avalonia.Rendering;
+using RoyalTerminal.Avalonia.Services;
 using RoyalTerminal.Terminal;
+using RoyalTerminal.Terminal.Services;
+using RoyalTerminal.Terminal.Transport.Ssh;
 using Tessera.Core;
 
 namespace Tessera.Services;
@@ -15,13 +18,20 @@ public sealed class GuardedTerminal : TerminalControl
 {
     public bool InputLocked { get; set; }
     protected override Type StyleKeyOverride => typeof(TerminalControl);
-    public GuardedTerminal(ISshCredentialProvider credentials) : base(null!, null!, null!, null!, null!, null!, credentials, null!, null!)
+    public GuardedTerminal(ISshCredentialProvider credentials) : base(
+        new TerminalSessionService(),
+        new DefaultTerminalInputAdapter(),
+        new DefaultTerminalSelectionService(),
+        new DefaultTerminalScrollService(),
+        new DefaultVtProcessorFactory([new GhosttyVtProcessorProvider()]),
+        new DefaultPtyFactory(),
+        credentials,
+        new KnownHostsSshHostKeyValidator(),
+        transportFactory: null)
     {
-        // Do not allow Ctrl+C to escape as a process interrupt while read-only.
-        // Application clipboard commands are handled by the owner window first.
-        AddHandler(KeyDownEvent, (_, e) => { if (InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
-        AddHandler(KeyUpEvent, (_, e) => { if (InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
-        AddHandler(TextInputEvent, (_, e) => { if (InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
+        AddHandler(KeyDownEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
+        AddHandler(TextInputEvent, (_, e) => { if(InputLocked) e.Handled = true; }, RoutingStrategies.Tunnel);
     }
 }
 
@@ -34,9 +44,9 @@ public sealed class SessionRuntime : IDisposable
     private readonly StringBuilder _output = new();
     private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
     private readonly object _outputLock = new();
+    private readonly ProfileRepository _profiles;
     private bool _disposed;
     private bool _replaySlot;
-    private readonly ProfileRepository _profiles;
     private Task? _startup;
     public Guid Id { get; }
     public TerminalSessionProfile Profile { get; private set; }
@@ -52,7 +62,6 @@ public sealed class SessionRuntime : IDisposable
     }
     public bool BroadcastTarget { get; set; }
     public bool IsReplay => _replaySlot || Capture.IsReplayEnabled;
-    public void MarkReplaySlot() { _replaySlot = true; Locked = true; State = "Replay · read-only"; }
     public bool IsRunning => Terminal.HasActiveSession && !_disposed;
     public event Action? Changed;
     public event Action<string>? Bell;
@@ -79,7 +88,7 @@ public sealed class SessionRuntime : IDisposable
         Locked = IsProduction;
         ApplyProfile(profile);
     }
-
+    public void MarkReplaySlot() { _replaySlot = true; Locked = true; State = "Replay · read-only"; }
     public void ApplyProductionPolicy(bool production)
     {
         if(IsProduction == production) return;
@@ -87,7 +96,6 @@ public sealed class SessionRuntime : IDisposable
         if(production) Locked = true;
         Changed?.Invoke();
     }
-
     public void ApplyProfile(TerminalSessionProfile profile)
     {
         Profile = profile; var a = profile.Appearance;
@@ -105,9 +113,13 @@ public sealed class SessionRuntime : IDisposable
         Terminal.FontSubpixelPositioning = font.SubpixelPositioning; Terminal.FontEdging = font.Edging; Terminal.FontHinting = font.Hinting;
         Terminal.FontBaselineSnap = font.BaselineSnap; Terminal.FontEmbeddedBitmaps = font.EmbeddedBitmaps; Terminal.FontEmbolden = font.Embolden;
         Terminal.FontForceAutoHinting = font.ForceAutoHinting; Terminal.FontLinearMetrics = font.LinearMetrics;
+        if(Terminal.Renderer is {} renderer)
+        {
+            renderer.EnableTextShaping = profile.Behavior.EnableTextShaping;
+            renderer.EnableLigatures = profile.Behavior.EnableLigatures;
+        }
         ThemeManager.ApplyTerminal(Terminal);
     }
-
     public Task EnsureStartedAsync() => _startup ??= StartAsync(restart: false);
     public Task ReconnectAsync() => StartAsync(restart: true);
     public Task StartAsync() => StartAsync(restart: false);
@@ -134,7 +146,6 @@ public sealed class SessionRuntime : IDisposable
         }
         finally { _lifecycle.Release(); }
     }
-
     public void Send(string text)
     {
         if(_disposed || Locked || IsReplay || !IsRunning) throw new InvalidOperationException("This session is not accepting input.");
@@ -164,7 +175,6 @@ public sealed class SessionRuntime : IDisposable
         if(_disposed) return;
         _disposed = true; _lifetime.Cancel(); BroadcastTarget = false;
         Capture.Dispose(); Terminal.DataReceived -= Receive; Terminal.StopPty(); State = "Disposed";
-        // In-flight startup can still release the semaphore after cancellation.
     }
 }
 
