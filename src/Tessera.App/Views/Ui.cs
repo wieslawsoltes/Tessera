@@ -33,6 +33,11 @@ public static class Ui
         if (label.Length > 0) row.Children.Add(Text(label));
         var button = new Button { Content = row }; if (style is not null) button.Classes.Add(style);
         AutomationProperties.SetName(button, label.Length > 0 ? label : icon ?? "Action");
+        if(style == "primary")
+        {
+            foreach(var text in row.Children.OfType<TextBlock>()) { text.Foreground = ThemeManager.Brush("AccentInk"); text.FontSize = 11; text.FontWeight = FontWeight.SemiBold; }
+            foreach(var path in row.Children.OfType<Path>()) path.Stroke = ThemeManager.Brush("AccentInk");
+        }
         button.Click += (_, _) => action(); return button;
     }
     public static Button IconButton(string icon, string tooltip, Action action)
@@ -43,5 +48,5 @@ public static class Ui
     public static StackPanel Stack(params Control[] children) { var s = new StackPanel { Spacing = 12 }; foreach (var c in children) s.Children.Add(c); return s; }
     public static Grid Row(string columns, params Control[] children) { var grid = new Grid { ColumnDefinitions = new ColumnDefinitions(columns) }; for (int i = 0; i < children.Length; i++) { Grid.SetColumn(children[i], i); grid.Children.Add(children[i]); } return grid; }
     public static Control Field(string label, Control input) => Stack(Text(label, 11, "Muted"), input);
-    public static TextBox Input(string? text = null, string? watermark = null) => new() { Text = text, Watermark = watermark, HorizontalAlignment = HorizontalAlignment.Stretch };
+    public static TextBox Input(string? text = null, string? watermark = null) => new() { Text = text, PlaceholderText = watermark, HorizontalAlignment = HorizontalAlignment.Stretch };
 }

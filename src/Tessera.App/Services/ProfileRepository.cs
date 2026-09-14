@@ -11,6 +11,7 @@ public sealed class ProfileRepository(string directory) : ISshCredentialProvider
 {
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly Dictionary<string, string> _passwords = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _proxyPasswords = new(StringComparer.Ordinal);
     public TerminalSessionProfilesDocument Document { get; private set; } = new() { DefaultProfileId = "local", Profiles = [Local()] };
     public HashSet<string> Production { get; private set; } = [];
     public Func<string, Task<string?>>? PasswordPrompt { get; set; }
@@ -55,6 +56,7 @@ public sealed class ProfileRepository(string directory) : ISshCredentialProvider
         var selected = editor.SelectedProfile?.Id;
         if (selected is not null && !string.IsNullOrEmpty(editor.SshPassword))
             _passwords["tessera/" + selected + "/password"] = editor.SshPassword;
+        if(selected is not null && !string.IsNullOrEmpty(editor.SshProxyPassword)) _proxyPasswords[selected] = editor.SshProxyPassword;
         var clean = doc.Profiles.Select(profile =>
         {
             var ssh = profile.Transport.Ssh;
@@ -108,12 +110,20 @@ public sealed class ProfileRepository(string directory) : ISshCredentialProvider
             if (!_passwords.TryGetValue(id, out password) && PasswordPrompt is {} prompt)
             {
                 // Avalonia's async dispatcher overload unwraps the returned task.
-                password = await Dispatcher.UIThread.InvokeAsync(() => prompt($"Password for {request.Endpoint.Username}@{request.Endpoint.Host}"));
+                password = await Dispatcher.UIThread.InvokeAsync(() => prompt($"Password for {request.Endpoint.Username}@{request.Endpoint.Host}").WaitAsync(cancellationToken));
                 cancellationToken.ThrowIfCancellationRequested();
             }
             if (password is null) throw new OperationCanceledException("SSH authentication cancelled.");
         }
         return new SshResolvedCredentials(password, request.Authentication.PrivateKeySecretIds.Where(File.Exists).ToArray(), request.Authentication.UseAgent);
+    }
+
+    public ITerminalTransportOptions RuntimeOptions(TerminalSessionProfile profile)
+    {
+        var options = TerminalSessionProfileMapper.ToTransportOptions(profile);
+        if(options is SshTransportOptions ssh && ssh.Proxy is {} proxy && _proxyPasswords.TryGetValue(profile.Id, out var password))
+            return ssh with { Proxy = proxy with { Password = password } };
+        return options;
     }
 
     public void AddDesignProfiles()

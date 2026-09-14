@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.Platform.Storage;
 using RoyalTerminal.Avalonia.Settings;
 using Tessera.Core;
 using Tessera.Services;
@@ -122,8 +123,13 @@ public sealed partial class MainWindow
     }
     public void ShowProfiles(string? selected=null)
     {
-        var state=Shell.Profiles.CreateEditor(selected);var panel=new TerminalSettingsPanel{State=state};
+        var state=Shell.Profiles.CreateEditor(selected);var panel=new TerminalSettingsPanel{DataContext=state};
         var production=new CheckBox{Content="Production connection · input locked on every connect · never broadcast",IsChecked=state.SelectedProfile is {} item&&Shell.Profiles.Production.Contains(item.Id)};
+        state.PropertyChanged += (_, e) =>
+        {
+            if(e.PropertyName == nameof(state.SelectedProfile))
+                production.IsChecked = state.SelectedProfile is {} selectedProfile && Shell.Profiles.Production.Contains(selectedProfile.Id);
+        };
         async Task Save()
         {
             var id=state.SelectedProfile?.Id;if(id is not null){if(production.IsChecked==true)Shell.Profiles.Production.Add(id);else Shell.Profiles.Production.Remove(id);}

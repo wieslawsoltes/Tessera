@@ -58,12 +58,12 @@ public sealed class DockHost : Grid
         AutomationProperties.SetName(splitter, "Resize terminal panes");
         if(split.Axis == SplitAxis.Columns)
         {
-            grid.ColumnDefinitions = new ColumnDefinitions { new(split.Ratio, GridUnitType.Star), new(4), new(1 - split.Ratio, GridUnitType.Star) };
+            grid.ColumnDefinitions = new ColumnDefinitions { new(split.Ratio, GridUnitType.Star), new(new GridLength(4)), new(1 - split.Ratio, GridUnitType.Star) };
             Grid.SetColumn(splitter, 1); Grid.SetColumn(second, 2); splitter.Width = 4; splitter.HorizontalAlignment = HorizontalAlignment.Stretch; splitter.VerticalAlignment = VerticalAlignment.Stretch; splitter.ResizeDirection = GridResizeDirection.Columns;
         }
         else
         {
-            grid.RowDefinitions = new RowDefinitions { new(split.Ratio, GridUnitType.Star), new(4), new(1 - split.Ratio, GridUnitType.Star) };
+            grid.RowDefinitions = new RowDefinitions { new(split.Ratio, GridUnitType.Star), new(new GridLength(4)), new(1 - split.Ratio, GridUnitType.Star) };
             Grid.SetRow(splitter, 1); Grid.SetRow(second, 2); splitter.Height = 4; splitter.HorizontalAlignment = HorizontalAlignment.Stretch; splitter.VerticalAlignment = VerticalAlignment.Stretch; splitter.ResizeDirection = GridResizeDirection.Rows;
         }
         void SaveRatio()
@@ -107,6 +107,13 @@ public sealed class DockHost : Grid
         var location = transport == "ssh" ? session.Profile.Transport.Ssh.Username + "@" + session.Profile.Transport.Ssh.Host : transport == "serial" ? session.Profile.Transport.Serial.PortName : session.Profile.Transport.Pty.WorkingDirectory ?? "~";
         var info = Ui.Row("*,Auto", Ui.Text("  " + (session.IsProduction ? "PRODUCTION  ·  " : "") + transport.ToUpperInvariant() + "  /  " + location, 9, session.IsProduction ? "Warning" : "Faint"), Ui.IconButton("more", "Session actions", () => _window.ShowSessionMenu(active)));
         info.Margin = new Thickness(8, 0); Grid.SetRow(info, 1); grid.Children.Add(info);
+        if(_window.IsFloating(active))
+        {
+            var placeholder = Ui.Stack(Ui.Text("This terminal is in its own window.", 16), Ui.Button("Return to workspace", "layout", () => _window.ReturnFloating(active)));
+            placeholder.HorizontalAlignment = HorizontalAlignment.Center;
+            placeholder.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetRow(placeholder, 2); grid.Children.Add(placeholder); return outer;
+        }
         var host = new ScrollViewer { Content = session.Terminal, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Background = ThemeManager.Brush("TerminalBg") };
         _terminalHosts.Add(host); Grid.SetRow(host, 2); grid.Children.Add(host);
         host.AddHandler(PointerPressedEvent, (_, _) => { if(_shell.ActiveDocumentId != active) _shell.Select(active); }, RoutingStrategies.Tunnel);
@@ -128,7 +135,7 @@ public sealed class DockHost : Grid
     private void DragMove(object? sender, PointerEventArgs e)
     {
         if(_dragDocument is null) return; var point = e.GetPosition(this);
-        if(!_dragging && (point - _dragOrigin).Length < 7) return;
+        if(!_dragging && Math.Sqrt(Math.Pow(point.X - _dragOrigin.X, 2) + Math.Pow(point.Y - _dragOrigin.Y, 2)) < 7) return;
         _dragging = true; _capturedPointer = e.Pointer; e.Pointer.Capture(this); e.Handled = true; _targetGroup = null;
         foreach(var (id, border) in _groups)
         {

@@ -35,6 +35,16 @@ public sealed partial class MainWindow : Window
         _dock = new DockHost(this, Shell); Q<ContentControl>("DockSurface").Content = _dock;
         ConfigureCommands();
         Shell.SessionCreated += ConfigureSession;
+        Shell.Profiles.Saved += () =>
+        {
+            foreach(var session in Shell.Sessions.All)
+            {
+                session.ApplyProductionPolicy(Shell.Profiles.Production.Contains(session.Profile.Id));
+                var profile = Shell.Profiles.Document.Profiles.FirstOrDefault(p => p.Id == session.Profile.Id);
+                if(profile is not null) session.ApplyProfile(profile);
+            }
+            Shell.SetBroadcast(false);
+        };
         Shell.Changed += render => { if(_closed) return; if(render) QueueRender(); else RefreshStatus(); };
         Shell.Profiles.PasswordPrompt = title => PromptAsync(title, "Credentials stay in memory and are never written to workspace files.", "", password: true);
         Q<Button>("PaletteButton").Click += (_, _) => ShowPalette();
@@ -70,7 +80,7 @@ public sealed partial class MainWindow : Window
     {
         _initializing = true;
         try { await Shell.InitializeAsync(); _commands.ApplyBindings(Shell.Data.Bindings); RenderShell(); }
-        finally { _initializing = false; }
+        finally { _initializing = false; RefreshStatus(); }
     }
     public async void Run(Func<Task> action)
     {
@@ -85,6 +95,7 @@ public sealed partial class MainWindow : Window
     }
     private void ConfigureSession(SessionRuntime session)
     {
+        session.Terminal.CloseRequested += (_, _) => Dispatcher.UIThread.Post(() => Run(() => CloseTabAsync(session.Id)));
         session.Terminal.TerminalFontSize = Shell.Data.Preferences.FontSize * .75;
         if(!string.IsNullOrWhiteSpace(Shell.Data.Preferences.FontFamily)) session.Terminal.FontFamilyName = Shell.Data.Preferences.FontFamily;
         session.Terminal.PasteSafetyPolicy = TerminalPasteSafetyPolicy.ConfirmUnsafe;
@@ -119,7 +130,7 @@ public sealed partial class MainWindow : Window
         Add("paste", "Paste safely", "Edit", "file", OperatingSystem.IsMacOS()?"Meta+V":"Ctrl+Shift+V", async()=>{var session=Shell.ActiveSession;if(session is null||session.Locked||session.IsReplay)throw new InvalidOperationException("This terminal is read-only.");await session.Terminal.PasteAsync();},HasSession);
         Add("select-all", "Select terminal output", "Edit", "file", primary+"+Shift+A",()=>Do(()=>Shell.ActiveSession?.Terminal.SelectAll()),HasSession);
         Add("find", "Find in terminal", "Edit", "search", primary+"+Shift+F",()=>Do(ShowSearch),HasSession);
-        Add("palette", "Command palette", "View", "search", primary+"+K",()=>Do(ShowPalette));
+        Add("palette", "Command palette", "View", "search", primary+"+K",()=>Do(()=>ShowPalette()));
         Add("settings", "Preferences", "View", "settings", primary+"+OemComma",()=>Do(ShowSettings));
         Add("layouts", "Choose a layout", "View", "layout", primary+"+Shift+L",()=>Do(ShowLayouts));
         Add("save-layout", "Save current layout", "View", "save", "", async()=>{var name=await PromptAsync("Save this arrangement", "A saved layout stores connection slots, not running processes.","My layout");if(!string.IsNullOrWhiteSpace(name))Shell.SaveLayout(name);});
@@ -195,8 +206,8 @@ public sealed partial class MainWindow : Window
     }
     private Button CommandButton(string id, bool iconOnly = false, string? style = null)
     {
-        var c=_commands[id];var b=iconOnly?Ui.IconButton(c.Icon,c.Title+ (c.Gesture.Length>0?" · "+c.Gesture:""),()=>c.Execute(null)):Ui.Button(c.Title,c.Icon,()=>c.Execute(null),style);
-        b.Command=c;return b;
+        var c=_commands[id];var b=iconOnly?Ui.IconButton(c.Icon,c.Title+ (c.Gesture.Length>0?" · "+c.Gesture:""),()=>c.Execute(null)):Ui.Button(id switch { "save-layout" => "Save layout", "layouts" => "Layouts", _ => c.Title },c.Icon,()=>c.Execute(null),style);
+        b.IsEnabled=c.CanExecute(null);return b;
     }
     private void BuildRail()
     {
@@ -238,7 +249,7 @@ public sealed partial class MainWindow : Window
     private void RefreshStatus()
     {
         if(!Dispatcher.UIThread.CheckAccess()){Dispatcher.UIThread.Post(RefreshStatus);return;}
-        if(_closed||!Shell.Initialized)return;
+        if(_closed||!Shell.Initialized||_initializing)return;
         _dock.UpdateStatus();Q<TextBlock>("SessionCount").Text=$"{Shell.Active.Documents.Count} sessions";
         var session=Shell.ActiveSession;Q<TextBlock>("WorkingDirectoryText").Text=session?.Profile.Transport.Pty.WorkingDirectory??"~";
         Q<TextBlock>("Status").Text=(Shell.DesignMode?"DESIGN FIXTURE  ·  ":"")+Shell.Status+"  ·  RoyalTerminal "+(session?.Terminal.IsUsingNativeVtProcessor==true?"Ghostty VT":"Managed VT");
@@ -254,13 +265,13 @@ public sealed partial class MainWindow : Window
         Q<Border>("ToolsBorder").IsVisible=tools;var splitter=Q<GridSplitter>("ToolsSplitter");splitter.IsVisible=tools;
         if(right)
         {
-            grid.RowDefinitions=new RowDefinitions("*");grid.ColumnDefinitions=new ColumnDefinitions{new(1,GridUnitType.Star),new(tools?4:0),new(tools?Math.Clamp(Shell.Data.Preferences.ToolSize,280,600):0)};
+            grid.RowDefinitions=new RowDefinitions("*");grid.ColumnDefinitions=new ColumnDefinitions{new(1,GridUnitType.Star),new(new GridLength(tools?4:0)),new(new GridLength(tools?Math.Clamp(Shell.Data.Preferences.ToolSize,280,600):0))};
             Grid.SetRow(splitter,0);Grid.SetColumn(splitter,1);splitter.Height=double.NaN;splitter.Width=4;splitter.ResizeDirection=GridResizeDirection.Columns;splitter.VerticalAlignment=VerticalAlignment.Stretch;
             Grid.SetRow(Q<Border>("ToolsBorder"),0);Grid.SetColumn(Q<Border>("ToolsBorder"),2);
         }
         else
         {
-            grid.ColumnDefinitions=new ColumnDefinitions("*");grid.RowDefinitions=new RowDefinitions{new(1,GridUnitType.Star),new(tools?4:0),new(tools?Math.Clamp(Shell.Data.Preferences.ToolSize,100,500):0)};
+            grid.ColumnDefinitions=new ColumnDefinitions("*");grid.RowDefinitions=new RowDefinitions{new(1,GridUnitType.Star),new(new GridLength(tools?4:0)),new(new GridLength(tools?Math.Clamp(Shell.Data.Preferences.ToolSize,100,500):0))};
             Grid.SetRow(splitter,1);Grid.SetColumn(splitter,0);splitter.Height=4;splitter.Width=double.NaN;splitter.ResizeDirection=GridResizeDirection.Rows;splitter.HorizontalAlignment=HorizontalAlignment.Stretch;
             Grid.SetRow(Q<Border>("ToolsBorder"),2);Grid.SetColumn(Q<Border>("ToolsBorder"),0);
         }

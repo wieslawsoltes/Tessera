@@ -11,7 +11,7 @@ public enum DockEdge { Center, Left, Right, Top, Bottom }
 public abstract record DockNode(Guid Id);
 public sealed record TabGroup(Guid Id, Guid[] Tabs, Guid? Active) : DockNode(Id);
 public sealed record DockSplit(Guid Id, SplitAxis Axis, double Ratio, DockNode First, DockNode Second) : DockNode(Id);
-public sealed record TerminalDocument(Guid Id, string ProfileId, string Title, bool Pinned = false);
+public sealed record TerminalDocument(Guid Id, string ProfileId, string Title, bool Pinned = false, bool IsReplay = false);
 public sealed record Workspace(Guid Id, string Name, string Description, DockNode Root, Dictionary<Guid, TerminalDocument> Documents, string Notes = "")
 {
     public static Workspace Empty(string name) => new(Guid.NewGuid(), name, "Your sessions. Your way of working.", new TabGroup(Guid.NewGuid(), [], null), []);

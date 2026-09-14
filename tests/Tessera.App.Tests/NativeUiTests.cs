@@ -11,10 +11,10 @@ using Tessera.Services;
 using Tessera.Views;
 using Xunit;
 
-[assembly: AvaloniaTestApplication(typeof(Tessera.App.Tests.TestBootstrap))]
+[assembly: AvaloniaTestApplication(typeof(Tessera.NativeTests.TestBootstrap))]
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
 
-namespace Tessera.App.Tests;
+namespace Tessera.NativeTests;
 
 public static class TestBootstrap
 {

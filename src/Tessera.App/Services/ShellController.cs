@@ -26,7 +26,15 @@ public sealed class ShellController : IDisposable
     public Guid? ActiveDocumentId { get; private set; }
     public Guid ActiveGroupId => Layout.Groups(Active.Root).FirstOrDefault(g => g.Tabs.Contains(ActiveDocumentId ?? Guid.Empty))?.Id ?? Layout.Groups(Active.Root).First().Id;
     public TerminalDocument? ActiveDocument => ActiveDocumentId is {} id ? Active.Documents.GetValueOrDefault(id) : null;
-    public SessionRuntime? ActiveSession => ActiveDocument is {} document ? GetSession(document) : null;
+    public SessionRuntime? ActiveSession
+    {
+        get
+        {
+            if(ActiveDocument is not {} document) return null;
+            try { return GetSession(document); }
+            catch(InvalidOperationException) { return null; }
+        }
+    }
     public List<TerminalCommandHistoryEntry> CommandHistory { get; } = [];
     public List<string> Events { get; } = [];
     public string Status { get; private set; } = "Ready";
@@ -84,7 +92,7 @@ public sealed class ShellController : IDisposable
             foreach(var document in Active.Documents.Values)
             {
                 var session = GetSession(document);
-                if(DesignMode || session.Profile.Transport.TransportId == TerminalTransportIds.Pty) await session.EnsureStartedAsync();
+                if(!document.IsReplay && (DesignMode || session.Profile.Transport.TransportId == TerminalTransportIds.Pty)) await session.EnsureStartedAsync();
             }
         Notify(false);
     }
@@ -160,6 +168,7 @@ public sealed class ShellController : IDisposable
         var document = Active.Documents.GetValueOrDefault(documentId); if(document is null) return;
         Apply(Layout.Close(Active, documentId), false); Sessions.Close(documentId); _wiredSessions.Remove(documentId); _history.Clear(); Notify(true);
     }
+    public void MarkReplay(Guid id) => Apply(Layout.Update(Active, Active.Documents[id] with { IsReplay = true }), false);
     public void RenameDocument(Guid id, string title) => Apply(Layout.Update(Active, Active.Documents[id] with { Title = Safety.CleanTitle(title) }));
     public void TogglePin(Guid id) => Apply(Layout.Update(Active, Active.Documents[id] with { Pinned = !Active.Documents[id].Pinned }));
     public void SwitchWorkspace(Guid workspaceId)

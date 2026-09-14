@@ -75,7 +75,7 @@ public sealed partial class MainWindow
     }
     private Control BuildNotes()
     {
-        var notes=new TextBox{Text=Shell.Active.Notes,Watermark="Keep context next to your commands. Notes are saved with this workspace.",AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,MinHeight=100,Background=Brushes.Transparent,BorderThickness=new Thickness(0),FontSize=12};
+        var notes=new TextBox{Text=Shell.Active.Notes,PlaceholderText="Keep context next to your commands. Notes are saved with this workspace.",AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,MinHeight=100,Background=Brushes.Transparent,BorderThickness=new Thickness(0),FontSize=12};
         notes.TextChanged+=(_,_)=>Shell.SetNotes(notes.Text??"");return notes;
     }
     private Control BuildFiles()
@@ -140,7 +140,7 @@ public sealed partial class MainWindow
         var session=Shell.ActiveSession;if(session is null||!session.Capture.HasCapture)throw new InvalidOperationException("There is no capture to save.");
         var file=await StorageProvider.SaveFilePickerAsync(new(){Title="Save recording",SuggestedFileName="session.rtcap.json",FileTypeChoices=[new("RoyalTerminal capture"){Patterns=["*.rtcap.json"]},new("Asciicast v3"){Patterns=["*.cast"]}]});
         if(file?.TryGetLocalPath() is not {} path)return;
-        var capture=session.Capture.GetCaptureSnapshot();
+        var capture=session.Capture.GetCaptureSnapshot() ?? throw new InvalidOperationException("The capture is empty.");
         if(path.EndsWith(".cast",StringComparison.OrdinalIgnoreCase))await TerminalCaptureSessionSerializer.SaveToFileAsync(capture,path,TerminalCaptureSessionFormats.AsciicastV3);
         else await TerminalCaptureSessionSerializer.SaveToFileAsync(capture,path);
         if(!OperatingSystem.IsWindows())File.SetUnixFileMode(path,UnixFileMode.UserRead|UnixFileMode.UserWrite);Shell.Report("Recording saved");
@@ -152,7 +152,7 @@ public sealed partial class MainWindow
         if(new FileInfo(path).Length>64*1024*1024)throw new InvalidOperationException("Recordings over 64 MiB require an indexed streaming player.");
         var capture=await TerminalCaptureSessionSerializer.LoadFromFileAsync(path);
         var document=await Shell.NewTerminalAsync(Shell.Profiles.Document.Profiles[0].Id,start:false);Shell.RenameDocument(document.Id,"Replay · "+Path.GetFileName(path));
-        var session=Shell.GetSession(document);session.Capture.LoadReplay(capture,Path.GetFileName(path));session.Locked=true;Shell.SetTool("Timeline");
+        Shell.MarkReplay(document.Id);var session=Shell.GetSession(Shell.Active.Documents[document.Id]);session.Capture.LoadReplay(capture,Path.GetFileName(path));session.Locked=true;Shell.SetTool("Timeline");
     }
     private async Task ExportOutputAsync()
     {

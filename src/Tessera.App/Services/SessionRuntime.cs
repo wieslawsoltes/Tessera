@@ -35,6 +35,8 @@ public sealed class SessionRuntime : IDisposable
     private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
     private readonly object _outputLock = new();
     private bool _disposed;
+    private bool _replaySlot;
+    private readonly ProfileRepository _profiles;
     private Task? _startup;
     public Guid Id { get; }
     public TerminalSessionProfile Profile { get; private set; }
@@ -49,14 +51,15 @@ public sealed class SessionRuntime : IDisposable
         set { Terminal.InputLocked = value; Terminal.IsHitTestVisible = !value; if(value) BroadcastTarget = false; Changed?.Invoke(); }
     }
     public bool BroadcastTarget { get; set; }
-    public bool IsReplay => Capture.IsReplayEnabled;
+    public bool IsReplay => _replaySlot || Capture.IsReplayEnabled;
+    public void MarkReplaySlot() { _replaySlot = true; Locked = true; State = "Replay · read-only"; }
     public bool IsRunning => Terminal.HasActiveSession && !_disposed;
     public event Action? Changed;
     public event Action<string>? Bell;
 
     public SessionRuntime(Guid id, TerminalSessionProfile profile, ProfileRepository profiles, bool design)
     {
-        Id = id; Profile = profile; _design = design; IsProduction = profiles.Production.Contains(profile.Id);
+        Id = id; Profile = profile; _design = design; _profiles = profiles; IsProduction = profiles.Production.Contains(profile.Id);
         Terminal = new GuardedTerminal(profiles)
         {
             Columns = 120, Rows = 36, Padding = new Thickness(14, 8, 8, 4),
@@ -118,7 +121,7 @@ public sealed class SessionRuntime : IDisposable
             if(restart) Terminal.StopPty(); else if(IsRunning) return;
             if(_design) { State = "Design fixture"; WriteFixture(); Changed?.Invoke(); return; }
             State = "Connecting"; Error = null; Locked = IsProduction; Changed?.Invoke();
-            await Terminal.StartSessionAsync(TerminalSessionProfileMapper.ToTransportOptions(Profile), true, _lifetime.Token);
+            await Terminal.StartSessionAsync(_profiles.RuntimeOptions(Profile), true, _lifetime.Token);
             if(_disposed) { Terminal.StopPty(); return; }
             State = "Connected"; Changed?.Invoke();
         }
@@ -171,8 +174,9 @@ public sealed class SessionRegistry(ProfileRepository profiles, bool design) : I
     public IReadOnlyCollection<SessionRuntime> All => _sessions.Values;
     public SessionRuntime Get(TerminalDocument document)
     {
-        if(_sessions.TryGetValue(document.Id, out var existing)) return existing;
+        if(_sessions.TryGetValue(document.Id, out var existing)) { if(document.IsReplay && !existing.IsReplay) existing.MarkReplaySlot(); return existing; }
         var session = new SessionRuntime(document.Id, profiles.Get(document.ProfileId), profiles, design);
+        if(document.IsReplay) session.MarkReplaySlot();
         _sessions.Add(document.Id, session); return session;
     }
     public SessionRuntime? Find(Guid id) => _sessions.GetValueOrDefault(id);
