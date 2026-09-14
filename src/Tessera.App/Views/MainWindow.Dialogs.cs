@@ -65,7 +65,8 @@ public sealed partial class MainWindow
         var list=new ListBox{MaxHeight=420,Background=Brushes.Transparent,BorderThickness=new Thickness(0)};
         list.ItemTemplate=new FuncDataTemplate<PaletteEntry>((entry,_)=>
         {
-            var details=Ui.Stack(Ui.Text(entry!.Title,12),Ui.Text(entry.Detail,10,"Faint"));details.Spacing=4;
+            if(entry is null) return new Border();
+            var details=Ui.Stack(Ui.Text(entry.Title,12),Ui.Text(entry.Detail,10,"Faint"));details.Spacing=4;
             var row=Ui.Row("30,*,Auto",Ui.Icon(entry.Icon),details,Ui.Text(entry.Shortcut,10,"Faint"));row.Margin=new Thickness(4,6);return row;
         });
         var entries=_commands.All.Select(c=>new PaletteEntry(c.Title,c.Category,c.Icon,c.Gesture,()=>c.Execute(null))).Concat(Shell.Data.Workspaces.Select(w=>new PaletteEntry(w.Name,"Switch workspace","layout","",()=>Shell.SwitchWorkspace(w.Id)))).Concat(Shell.Profiles.Document.Profiles.Select(p=>new PaletteEntry(p.DisplayName,"Connect · "+p.Transport.TransportId,"server","",()=>Run(async()=>{await Shell.NewTerminalAsync(p.Id);})))) .ToArray();

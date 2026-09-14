@@ -1,5 +1,5 @@
 <Styles xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
- <Style Selector="Window"><Setter Property="Background" Value="{DynamicResource Bg}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontSize" Value="13"/><Setter Property="FontFamily" Value="Inter"/></Style>
+ <Style Selector="Window"><Setter Property="Background" Value="{DynamicResource Bg}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontSize" Value="13"/><Setter Property="FontFamily" Value="fonts:Inter#Inter"/></Style>
  <Style Selector="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Text}"/></Style>
  <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
  <Style Selector="TextBlock.faint"><Setter Property="Foreground" Value="{DynamicResource Faint}"/></Style>

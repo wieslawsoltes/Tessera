@@ -48,6 +48,7 @@ public sealed class SessionRuntime : IDisposable
     private bool _disposed;
     private bool _replaySlot;
     private Task? _startup;
+    public string DocumentTitle { get; set; } = "Terminal";
     public Guid Id { get; }
     public TerminalSessionProfile Profile { get; private set; }
     public GuardedTerminal Terminal { get; }
@@ -167,7 +168,9 @@ public sealed class SessionRuntime : IDisposable
     }
     private void WriteFixture()
     {
-        var text = Profile.Id == "staging"
+        var text = DocumentTitle == "dev server"
+            ? "\u001b[90mDesign fixture · local watcher\u001b[0m\r\n\r\n  → Local:  \u001b[34mhttp://localhost:5173/\u001b[0m\r\n  → Mode:   visual acceptance fixture\r\n\r\n  \u001b[32m✓\u001b[0m app mounted\r\n  \u001b[32m✓\u001b[0m workspace shell ready\r\n  \u001b[32m✓\u001b[0m terminal surfaces attached\r\n\r\n\u001b[34m~/Developer/tessera\u001b[32m ❯ \u001b[0m"
+            : Profile.Id == "staging"
             ? "\u001b[90mDesign fixture · no remote network connection\u001b[0m\r\n\r\nUbuntu 24.04 LTS   •   x86_64\r\nLoad  0.08        Memory  1.2 / 8 GB\r\n\r\n$ systemctl status tessera-api\r\n\u001b[32m● tessera-api.service — API service\r\n   Active: active (running)\u001b[0m\r\n\r\n\u001b[34m/srv/api\u001b[32m ❯ \u001b[0m"
             : "\u001b[32mtessera\u001b[90m  /  your command line, composed.\u001b[0m\r\nA considered workspace for the command line.\r\n\r\n\u001b[32m❯\u001b[0m git status\r\nOn branch \u001b[34mfeature/workspace-shell\u001b[0m\r\nYour branch is up to date with origin.\r\n\r\nChanges ready for review:\r\n  \u001b[32mmodified:\u001b[0m   src/Tessera.App/Views/MainWindow.axaml\r\n  \u001b[32mmodified:\u001b[0m   src/Tessera.Core/Workspace.cs\r\n  \u001b[32mnew file:\u001b[0m   tests/Tessera.Tests/LayoutTests.cs\r\n\r\n\u001b[32m❯\u001b[0m dotnet test\r\n\r\n  Layout persistence\r\n  Session lifecycle\r\n  Keyboard routing\r\n\r\n\u001b[90mVisual acceptance fixture, not a test result.\u001b[0m\r\n\r\n\u001b[34m~/Developer/tessera\u001b[32m ❯ \u001b[0m";
         Terminal.WriteOutput(Encoding.UTF8.GetBytes(text));
@@ -187,7 +190,7 @@ public sealed class SessionRegistry(ProfileRepository profiles, bool design) : I
     public SessionRuntime Get(TerminalDocument document)
     {
         if(_sessions.TryGetValue(document.Id, out var existing)) { if(document.IsReplay && !existing.IsReplay) existing.MarkReplaySlot(); return existing; }
-        var session = new SessionRuntime(document.Id, profiles.Get(document.ProfileId), profiles, design);
+        var session = new SessionRuntime(document.Id, profiles.Get(document.ProfileId), profiles, design) { DocumentTitle = document.Title };
         if(document.IsReplay) session.MarkReplaySlot();
         _sessions.Add(document.Id, session); return session;
     }
