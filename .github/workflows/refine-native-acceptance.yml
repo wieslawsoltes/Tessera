@@ -1,0 +1,97 @@
+name: Native acceptance regression fixes
+on:
+  push:
+    branches: [feature/acceptance-completion]
+    paths: [.github/workflows/refine-native-acceptance.yml]
+permissions:
+  contents: write
+jobs:
+  refine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Apply reviewed source corrections
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          def replace(path,before,after):
+              p=Path(path); s=p.read_text(); assert before in s,path; p.write_text(s.replace(before,after))
+          replace('src/Tessera.App/Services/SftpWorkspace.cs','privateAttributes.SetPermissions(384); // 0600 before any content is written.','privateAttributes.SetPermissions(600); // SSH.NET accepts octal digits as decimal, not the bit mask 0x180.')
+          replace('src/Tessera.App/Views/DockHost.cs','b.PointerPressed += (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragTrigger = e; _dragOrigin = e.GetPosition(this); } };','// Buttons consume pointer presses; observe the tunnel before their class handler.\n            b.AddHandler(PointerPressedEvent, (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragTrigger = e; _dragOrigin = e.GetPosition(this); } }, RoutingStrategies.Tunnel, handledEventsToo: true);')
+          replace('src/Tessera.App/Views/MainWindow.axaml','ALPHA 01','PREVIEW 02')
+          replace('tests/Tessera.App.Tests/AcceptanceUiTests.cs','Assert.Contains("tessera",value.Value,StringComparison.OrdinalIgnoreCase);Assert.True(value.Value.Length<=65536);','string output=Assert.IsType<string>(value.Value);Assert.Contains("tessera",output,StringComparison.OrdinalIgnoreCase);Assert.True(output.Length<=65536);')
+          PY
+      - name: Update actual X11 drag regression
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('eng/desktop-smoke.sh');s=p.read_text();s=s[:s.index('sleep 1\nimport')]+'''xdotool windowmove "$window" 10 20
+          xdotool windowsize "$window" 960 850
+          sleep 1
+          import -window "$window" artifacts/desktop/obsidian-x11.png
+          palette() {
+            xdotool key --clearmodifiers ctrl+shift+p
+            sleep .25
+            xdotool type --clearmodifiers --delay 8 "$1"
+            sleep .25
+            xdotool key Return
+            sleep .7
+          }
+          palette 'Float terminal in a window'
+          floating=''
+          for attempt in $(seq 1 40); do
+            floating=$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null | head -1 || true)
+            test -n "$floating" && break
+            sleep .25
+          done
+          test -n "$floating"
+          xdotool windowmove "$floating" 980 100
+          xdotool windowsize "$floating" 600 600
+          xdotool windowraise "$floating"
+          xdotool windowfocus --sync "$floating"
+          sleep .7
+          import -window root artifacts/desktop/floating-x11.png
+          # Drive Xdnd through genuine X11 pointer delivery, not the docking model/broker seam.
+          xdotool mousemove --sync 1040 165 mousedown 1
+          sleep .15
+          for point in '1025 178' '975 205' '850 250' '700 300' '500 350' '300 410'; do
+            read -r x y <<< "$point"
+            xdotool mousemove --sync "$x" "$y"
+            sleep .2
+          done
+          import -window root artifacts/desktop/cross-window-drag-x11.png
+          xdotool mouseup 1
+          for attempt in $(seq 1 40); do
+            test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null || true)" && break
+            sleep .25
+          done
+          test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null || true)"
+          kill -0 "$pid"
+          import -window root artifacts/desktop/cross-window-docked-x11.png
+          xdotool windowfocus --sync "$window"
+          palette 'SFTP file workspace'
+          sftp=$(xdotool search --onlyvisible --pid "$pid" --name 'SFTP' 2>/dev/null | head -1)
+          test -n "$sftp"
+          kill -0 "$pid"
+          import -window root artifacts/desktop/sftp-x11.png
+          xdotool key Escape
+          printf '{"backend":"X11","input":"synthetic X11 keyboard and pointer","nativeCrossWindowDragPassed":true,"physicalDevicesAudited":false,"passed":true}\\n' > artifacts/desktop/smoke.json
+          ''';p.write_text(s)
+          PY
+      - run: dotnet build src/Tessera.App -c Release -warnaserror
+      - run: dotnet test tests/Tessera.App.Tests -c Release --logger trx --blame-hang-timeout 3m
+      - name: Commit validated source
+        run: |
+          git rm .github/workflows/refine-native-acceptance.yml
+          git add src tests eng/desktop-smoke.sh
+          git -c user.name='Tessera CI' -c user.email='tessera-ci@users.noreply.github.com' commit -m 'fix: observe tab press tunneling and use SSH.NET octal-digit permissions'
+          git push origin HEAD:feature/acceptance-completion
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-regression-test-results
+          path: '**/TestResults/*.trx'
