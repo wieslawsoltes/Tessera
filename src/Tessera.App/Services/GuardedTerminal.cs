@@ -80,9 +80,9 @@ public sealed class GuardedTerminal : TerminalControl
     private GuardedTerminal(ProfileRepository profiles, GuardedTerminalInputAdapter input, SshConnectionContext security) : base(
         new TerminalSessionService(), input,
         new GuardedTerminalSelectionService(input), new DefaultTerminalScrollService(),
-        new DefaultVtProcessorFactory([new GhosttyVtProcessorProvider()]), new DefaultPtyFactory(),
+        new DefaultVtProcessorFactory([new GhosttyVtProcessorProvider()]), new TesseraPtyFactory(),
         security, security, new CompositeTerminalTransportFactory([
-            new PtyTerminalTransportProvider(new DefaultPtyFactory()), new PipeTerminalTransportProvider(),
+            new PtyTerminalTransportProvider(new TesseraPtyFactory()), new PipeTerminalTransportProvider(),
             new RawTcpTerminalTransportProvider(), new TelnetTerminalTransportProvider(), new SerialTerminalTransportProvider(),
             new SshNetTerminalTransportProvider(security, security, [security])]))
     {

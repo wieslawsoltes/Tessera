@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '10.0.x'
+      - name: Test acceptance evidence verifier
+        run: python -m unittest discover -s tools -p 'test_*.py' -v
       - run: dotnet test tests/Tessera.Tests -c Release --logger trx
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -55,10 +57,10 @@ jobs:
           security default-keychain -d user -s "$keychain"
       - name: Build native application
         run: dotnet build src/Tessera.App -c Release -warnaserror
-      - name: Native UI, rendering, keyboard, PTY and platform vault tests
+      - name: Native UI, rendering, keyboard, PTY and platform vault tests with completeness gate
         env:
           TESSERA_VAULT_TESTS: ${{ runner.os != 'Linux' && '1' || '0' }}
-        run: dotnet test tests/Tessera.App.Tests -c Release --logger trx --blame-hang-timeout 2m
+        run: python tools/run_native_validation.py
       - name: Publish self-contained application
         run: dotnet publish src/Tessera.App -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
       - name: Collect dependency notices
@@ -76,6 +78,8 @@ jobs:
           name: native-validation-${{ matrix.rid }}
           path: |
             artifacts/screenshots
+            artifacts/test-evidence
+            artifacts/pty-diagnostics
             **/TestResults/*.trx
       - name: Delete isolated keychain
         if: always() && runner.os == 'macOS'
@@ -101,7 +105,7 @@ jobs:
           dbus-run-session -- bash -eu -o pipefail -c '
             password=$(openssl rand -hex 24)
             printf "%s" "$password" | gnome-keyring-daemon --unlock --components=secrets
-            dotnet test tests/Tessera.App.Tests -c Release --filter FullyQualifiedName~ExternalAcceptanceTests --logger trx --blame-hang-timeout 2m
+            python tools/run_native_validation.py --mode integration
           '
       - name: Desktop X11 smoke test
         shell: bash
@@ -114,6 +118,7 @@ jobs:
           name: integration-evidence
           path: |
             **/TestResults/*.trx
+            artifacts/test-evidence
             artifacts/desktop
       - name: Stop isolated SSH service
         if: always()

@@ -1,0 +1,77 @@
+name: ConPTY isolation
+on:
+  push:
+    branches: [fix/pty-result-completeness]
+    paths: [.github/workflows/conpty-isolation.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '10.0.x'
+      - name: Create isolated transport probe
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('artifacts/probe'); p.mkdir(parents=True)
+          (p/'Probe.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><ProjectReference Include="../../src/Tessera.App/Tessera.App.csproj"/></ItemGroup></Project>')
+          (p/'Program.cs').write_text(r'''
+          using System.Collections.Concurrent;
+          using System.Text;
+          using System.Text.Json;
+          using RoyalTerminal.Terminal;
+          using RoyalTerminal.Terminal.Transport.Pty;
+          if (!OperatingSystem.IsWindows()) return;
+          string dir = Path.GetFullPath("artifacts/probe");
+          var all = new List<object>();
+          foreach (bool viaTransport in new[] { false, true })
+          {
+              string name = viaTransport ? "transport" : "pty";
+              string folder = Path.Combine(dir, name); Directory.CreateDirectory(folder);
+              string marker = "CHILD_READY_" + Guid.NewGuid().ToString("N");
+              string script = Path.Combine(folder,"startup.cmd");
+              await File.WriteAllTextAsync(script, $"@echo off\r\necho BEFORE>before.txt\r\necho {marker}\r\necho AFTER>after.txt\r\nprompt $G\r\n",new UTF8Encoding(false));
+              var chunks = new ConcurrentQueue<string>();
+              int? exit = null;
+              var pty = new DefaultPtyFactory().Create();
+              var transport = new PtyTerminalTransport(new DefaultPtyFactory(), new DefaultShellProfileCatalog());
+              void Data(byte[] bytes, int n) => chunks.Enqueue(Encoding.UTF8.GetString(bytes, 0, n));
+              try
+              {
+                  string shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"cmd.exe");
+                  string[] argv = ["/D","/Q","/K",script];
+                  if(viaTransport)
+                  {
+                      transport.DataReceived += Data; transport.ProcessExited += code => exit = code;
+                      await transport.StartAsync(new PtyTransportOptions(new TerminalCommandSpec(shell,argv), folder, null, new(120,36,960,720)));
+                  }
+                  else
+                  {
+                      pty.DataReceived += Data; pty.ProcessExited += code => exit = code;
+                      pty.Start(shell,120,36,folder,arguments:argv);
+                  }
+                  await Task.Delay(1500);
+                  var beforeInput = chunks.ToArray();
+                  string input = "echo INPUT_COMMAND\r";
+                  if(viaTransport) transport.SendInput(Encoding.UTF8.GetBytes(input)); else pty.Write(input);
+                  await Task.Delay(1500);
+                  all.Add(new { name, marker, script=await File.ReadAllTextAsync(script), beforeFile=File.Exists(Path.Combine(folder,"before.txt")), afterFile=File.Exists(Path.Combine(folder,"after.txt")), beforeInput, afterInput=chunks.ToArray(), exit });
+              }
+              catch(Exception error) { all.Add(new { name,error=error.ToString(),chunks=chunks.ToArray() }); }
+              finally { transport.Dispose(); pty.Dispose(); }
+          }
+          string json=JsonSerializer.Serialize(all,new JsonSerializerOptions { WriteIndented=true });
+          await File.WriteAllTextAsync(Path.Combine(dir,"results.json"),json); Console.WriteLine(json);
+          ''')
+      - run: dotnet run --project artifacts/probe/Probe.csproj -c Release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: conpty-isolation
+          path: artifacts/probe/*.json
+          retention-days: 3

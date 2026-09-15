@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Avalonia.Threading;
 using RoyalTerminal.Terminal;
 using Tessera.Services;
@@ -8,10 +9,7 @@ using Xunit;
 
 namespace Tessera.NativeTests;
 
-/// <summary>
-/// Executes a real PTY without inheriting the runner's interactive shell customization.
-/// The readiness marker comes from the child, and command assertions cannot pass on input echo.
-/// </summary>
+/// <summary>Real child-shell readiness and command assertions that cannot pass on input echo.</summary>
 internal static class PtyTestFixture
 {
     public static async Task<MainWindow> OpenAsync(string directory, CancellationToken token)
@@ -23,7 +21,7 @@ internal static class PtyTestFixture
         if (OperatingSystem.IsWindows())
         {
             string script = Path.Combine(directory, "pty-start.cmd");
-            await File.WriteAllTextAsync(script, $"@echo off\r\nprompt {ready}$G\r\n", new UTF8Encoding(false), token);
+            await File.WriteAllTextAsync(script, $"@echo off\r\necho {ready}\r\nprompt $G\r\n", new UTF8Encoding(false), token);
             pty = new()
             {
                 ShellPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
@@ -64,7 +62,6 @@ internal static class PtyTestFixture
 
     public static async Task AssertCommandAsync(SessionRuntime session, string prefix, CancellationToken token)
     {
-        // Both sides of the marker are separated in the input, including on Windows.
         string suffix = Guid.NewGuid().ToString("N");
         string marker = prefix + suffix;
         string input = OperatingSystem.IsWindows()
@@ -87,6 +84,23 @@ internal static class PtyTestFixture
             if (!session.IsRunning) break;
             await Task.Delay(50, token);
         }
-        Assert.Fail($"PTY did not produce {marker}. State: {session.State}. Error: {session.Error}. Output: {session.OutputSnapshot()}");
+        session.Terminal.TryExportSnapshot(TerminalSnapshotExportFormat.PlainText,
+            new TerminalSnapshotExportOptions(true, true), out var rendered);
+        var directory = session.Profile.Transport.Pty.WorkingDirectory!;
+        string evidence = JsonSerializer.Serialize(new
+        {
+            Marker = marker, session.State, session.Error,
+            RawOutput = session.OutputSnapshot(), RenderedOutput = rendered,
+            session.Terminal.Columns, session.Terminal.Rows, session.Profile.Transport.Pty,
+            ChildStarted = File.Exists(Path.Combine(directory, "pty-started.txt")),
+            StartupScript = File.Exists(Path.Combine(directory, "pty-start.cmd")) ? File.ReadAllText(Path.Combine(directory, "pty-start.cmd")) : null
+        });
+        if (Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") is { Length: > 0 } root)
+        {
+            string folder = Path.Combine(root, "artifacts", "pty-diagnostics");
+            Directory.CreateDirectory(folder);
+            await File.WriteAllTextAsync(Path.Combine(folder, marker + ".json"), evidence, token);
+        }
+        Assert.Fail("PTY did not produce its expected marker. " + evidence);
     }
 }
