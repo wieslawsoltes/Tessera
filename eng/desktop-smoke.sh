@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs the real X11 backend, not Avalonia.Headless. Synthetic X11 input is not a physical-device audit.
 set -euo pipefail
+# Commands contain no user data or credentials. Keep the failing X11 operation in CI logs.
+set -x
 mkdir -p artifacts/desktop
 binary=$(find src/Tessera.App/bin -path '*/Release/net10.0/Tessera.dll' -print -quit)
 dotnet "$binary" --design-mode >artifacts/desktop/native.log 2>&1 &
@@ -30,11 +32,12 @@ palette() {
 palette 'Float terminal in a window'
 floating=''
 for attempt in $(seq 1 40); do
-  floating=$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null | head -1 || true)
+  floating=$(xdotool search --onlyvisible --pid "$pid" --name 'Tessera' 2>/dev/null | grep -vx "$window" | head -1 || true)
   test -n "$floating" && break
   sleep .25
 done
 test -n "$floating"
+test "$floating" != "$window"
 xdotool windowmove "$floating" 980 100
 xdotool windowsize "$floating" 600 600
 xdotool windowraise "$floating"
@@ -52,10 +55,10 @@ done
 import -window root artifacts/desktop/cross-window-drag-x11.png
 xdotool mouseup 1
 for attempt in $(seq 1 40); do
-  test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null || true)" && break
+  test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Tessera' 2>/dev/null | grep -x "$floating" || true)" && break
   sleep .25
 done
-test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Development.*Tessera' 2>/dev/null || true)"
+test -z "$(xdotool search --onlyvisible --pid "$pid" --name 'Tessera' 2>/dev/null | grep -x "$floating" || true)"
 kill -0 "$pid"
 import -window root artifacts/desktop/cross-window-docked-x11.png
 xdotool windowfocus --sync "$window"

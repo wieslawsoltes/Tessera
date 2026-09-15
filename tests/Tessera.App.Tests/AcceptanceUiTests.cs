@@ -74,7 +74,7 @@ public sealed class AcceptanceUiTests
     [AvaloniaFact]
     public async Task LivePtySurvivesTwoNativeWindowTransfersAndAsyncDisposal()
     {
-        using var dir=new AcceptanceDirectory();var w=await OpenAsync(dir.Path,false);
+        using var dir=new AcceptanceDirectory();var w=await PtyTestFixture.OpenAsync(dir.Path,Token);
         var session=w.Shell.ActiveSession!;
         try
         {
@@ -83,10 +83,7 @@ public sealed class AcceptanceUiTests
             var floatId=w.Shell.Active.Floating.Single().Id;
             w.Shell.Apply(Layout.ReturnWindow(w.Shell.Active,floatId));await SettleAsync();
             Assert.Same(terminal,w.Shell.ActiveSession!.Terminal);Assert.True(session.IsRunning);
-            string suffix=Guid.NewGuid().ToString("N");string marker="TRANSFER_"+suffix;
-            session.Send(OperatingSystem.IsWindows()?"echo TRANSFER_"+suffix+"\r":"printf 'TRANSFER_%s\\n' '"+suffix+"'\r");
-            for(int i=0;i<70&&!session.OutputSnapshot().Contains(marker,StringComparison.Ordinal);i++)await Task.Delay(80,Token);
-            Assert.Contains(marker,session.OutputSnapshot());
+            await PtyTestFixture.AssertCommandAsync(session,"TRANSFER_",Token);
             await w.Shell.PrepareShutdownAsync();Assert.False(session.IsRunning);Assert.Equal("Disposed",session.State);
             await session.DisposeAsync();
         }
