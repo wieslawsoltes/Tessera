@@ -24,7 +24,9 @@ internal static class PtyTestFixture
         if (OperatingSystem.IsWindows())
         {
             string script = Path.Combine(directory, "pty-start.cmd");
-            await File.WriteAllTextAsync(script, $"@echo off\r\nprompt {ready}$G\r\n", new UTF8Encoding(false), token);
+            // /Q and @echo off can suppress the interactive prompt. Readiness
+            // must be an explicit write by the child, not a prompt assumption.
+            await File.WriteAllTextAsync(script, $"@echo off\r\necho {ready}\r\nprompt $G\r\n", new UTF8Encoding(false), token);
             pty = new()
             {
                 ShellPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
