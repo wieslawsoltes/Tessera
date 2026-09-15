@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Avalonia.Threading;
 using RoyalTerminal.Terminal;
 using Tessera.Services;
@@ -87,6 +88,22 @@ internal static class PtyTestFixture
             if (!session.IsRunning) break;
             await Task.Delay(50, token);
         }
-        Assert.Fail($"PTY did not produce {marker}. State: {session.State}. Error: {session.Error}. Output: {session.OutputSnapshot()}");
+        session.Terminal.TryExportSnapshot(TerminalSnapshotExportFormat.PlainText,
+            new TerminalSnapshotExportOptions(true, true), out var rendered);
+        // Raw ConPTY output can contain XML-invalid control characters. Never put
+        // them directly in assertion messages consumed by TRX or runner protocols.
+        string evidence = JsonSerializer.Serialize(new
+        {
+            Marker = marker, session.State, session.Error,
+            RawOutput = session.OutputSnapshot(), RenderedOutput = rendered,
+            session.Terminal.Columns, session.Terminal.Rows, session.Profile.Transport.Pty
+        });
+        if (Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") is { Length: > 0 } root)
+        {
+            string folder = Path.Combine(root, "artifacts", "pty-diagnostics");
+            Directory.CreateDirectory(folder);
+            await File.WriteAllTextAsync(Path.Combine(folder, marker + ".json"), evidence, token);
+        }
+        Assert.Fail("PTY did not produce its expected marker. " + evidence);
     }
 }
