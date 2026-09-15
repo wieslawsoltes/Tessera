@@ -61,6 +61,29 @@ jobs:
         env:
           TESSERA_VAULT_TESTS: ${{ runner.os != 'Linux' && '1' || '0' }}
         run: python tools/run_native_validation.py
+      - name: Check out the reported macOS crash baseline
+        if: runner.os == 'macOS'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a4cfad3658a0c2ac1a7396fbaf46b345dda846e2
+          path: artifacts/menu-crash-baseline
+          persist-credentials: false
+      - name: Reproduce the exact Cocoa exporter exception before the fix
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p artifacts/menu-crash-baseline/tests/Tessera.Desktop.Smoke
+          cp tests/Tessera.Desktop.Smoke/Program.cs tests/Tessera.Desktop.Smoke/Tessera.Desktop.Smoke.csproj artifacts/menu-crash-baseline/tests/Tessera.Desktop.Smoke/
+          python tools/run_desktop_validation.py --project artifacts/menu-crash-baseline/tests/Tessera.Desktop.Smoke --mode fixture --expect-menu-mismatch --evidence artifacts/desktop-backend/baseline
+      - name: Native Cocoa / Win32 menu lifecycle with fixture and real PTY
+        if: runner.os != 'Linux'
+        run: python tools/run_desktop_validation.py
+      - name: Native X11 menu lifecycle with fixture and real PTY
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -a -s '-screen 0 1600x1000x24' python tools/run_desktop_validation.py
       - name: Publish self-contained application
         run: dotnet publish src/Tessera.App -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
       - name: Collect dependency notices
@@ -80,6 +103,7 @@ jobs:
             artifacts/screenshots
             artifacts/test-evidence
             artifacts/pty-diagnostics
+            artifacts/desktop-backend
             **/TestResults/*.trx
       - name: Delete isolated keychain
         if: always() && runner.os == 'macOS'
