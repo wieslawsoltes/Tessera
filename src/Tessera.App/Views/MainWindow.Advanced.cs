@@ -45,8 +45,8 @@ public sealed partial class MainWindow
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         actions.Children.Add(Ui.Button("Load source", "file", () => Run(async () =>
         {
-            var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Open shader source", AllowMultiple = false });
-            if(files.FirstOrDefault()?.TryGetLocalPath() is not {} path) return;
+            var files = await _fileDialogs.OpenFilesAsync(this, new() { Title = "Open shader source", AllowMultiple = false });
+            if(files.FirstOrDefault() is not {} path) return;
             if(new FileInfo(path).Length > 262144) throw new InvalidOperationException("Shader source is limited to 256 KiB.");
             editor.Text = await File.ReadAllTextAsync(path); presets.SelectedIndex = 3;
         })));

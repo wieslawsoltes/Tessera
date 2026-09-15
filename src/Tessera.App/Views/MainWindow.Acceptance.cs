@@ -124,8 +124,8 @@ public sealed partial class MainWindow
     private async Task<bool> ExportCaptureAsync(TerminalCaptureSession capture)
     {
         capture = CapturePrivacy.OutputOnly(capture);
-        var file=await StorageProvider.SaveFilePickerAsync(new(){Title="Export recording (may contain secrets)",SuggestedFileName="session.rtcap.json",FileTypeChoices=[new("RoyalTerminal capture"){Patterns=["*.rtcap.json"]},new("Asciicast v3"){Patterns=["*.cast"]}]});
-        if(file?.TryGetLocalPath() is not {} path)return false;
+        var path=await _fileDialogs.SaveFileAsync(this, new(){Title="Export recording (may contain secrets)",SuggestedFileName="session.rtcap.json",FileTypeChoices=[new("RoyalTerminal capture"){Patterns=["*.rtcap.json"]},new("Asciicast v3"){Patterns=["*.cast"]}]});
+        if(path is null)return false;
         var temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
         try
         {

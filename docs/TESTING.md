@@ -39,3 +39,23 @@ On timeout, JSON-escaped evidence includes transport state, raw output and a ren
 During the acceptance audit, a Windows VSTest run discovered 63 native cases but emitted only 61 result records. Two live-PTY cases had started and timed out without a recorded outcome, while the process returned success. The result verifier has a regression for that exact failure mode and rejects it before packaging. Test totals are derived from records, not inferred from workflow step names or screenshot content. Explicit fixture skips are listed separately, never counted as passed.
 
 CI runs the verifier before publishing application packages. Archive provenance is emitted only when all required core/native/integration jobs succeed. Provenance establishes origin and integrity; it does not certify hardware coverage or replace Authenticode, Developer ID or notarization. Those release gates remain documented in `ACCEPTANCE.md`, `SIGNING.md`, and repository issues #2 and #3.
+
+## Menu ownership and full UI workflows
+
+The application suite also includes `MenuLifecycleRegressionTests`, `FullUiRegressionTests`,
+`FileWorkflowRegressionTests`, `SecurityWorkflowRegressionTests`,
+`TerminalCommandWorkflowTests` and `RecoveryWorkflowRegressionTests`.
+See `UI-REGRESSIONS.md` for the feature-to-test matrix and explicit test-double boundaries.
+Native root attachment and item ownership regressions are mandatory in the result inventory.
+
+For the real Cocoa/Win32 backend, separately run:
+
+```sh
+python tools/run_desktop_validation.py
+```
+
+Linux requires a desktop display or `xvfb-run -a -s '-screen 0 1600x1000x24'` before that command.
+The harness uses isolated storage and subprocesses for explicit fixtures and a real PTY.
+CI runs a macOS negative control against the reported baseline, then requires the fixed
+Cocoa exporter and both desktop scenarios to pass before packaging. See
+`MACOS-MENU-LIFECYCLE.md`. Headless Skia screenshots never certify the Cocoa exporter.

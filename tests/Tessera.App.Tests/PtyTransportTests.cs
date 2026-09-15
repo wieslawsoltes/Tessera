@@ -21,7 +21,7 @@ public sealed class PtyTransportTests
         if (OperatingSystem.IsWindows())
         {
             string script = Path.Combine(directory.Path, "raw-pty.cmd");
-            await File.WriteAllTextAsync(script, $"@echo off\r\necho started>child-started.txt\r\necho {marker}\r\n", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(script, $"@echo off\r\necho started>child-started.txt\r\necho {marker}\r\n", new UTF8Encoding(false), TestContext.Current.CancellationToken);
             shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             arguments = ["/D", "/C", script];
         }
@@ -54,7 +54,7 @@ public sealed class PtyTransportTests
             {
                 string folder = Path.Combine(root, "artifacts", "pty-diagnostics");
                 Directory.CreateDirectory(folder);
-                await File.WriteAllTextAsync(Path.Combine(folder, "raw-transport.json"), evidence);
+                await File.WriteAllTextAsync(Path.Combine(folder, "raw-transport.json"), evidence, TestContext.Current.CancellationToken);
             }
             Assert.Fail("Real child stdout was not received by the PTY: " + evidence);
         }

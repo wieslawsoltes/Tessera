@@ -101,7 +101,7 @@ public sealed partial class MainWindow
     private Control BuildFiles()
     {
         var list=new StackPanel{Spacing=5};
-        list.Children.Add(Ui.Button(_fileDirectory is null?"Choose a local folder":_fileDirectory,"folder",()=>Run(async()=>{var folders=await StorageProvider.OpenFolderPickerAsync(new(){Title="Browse local files",AllowMultiple=false});if(folders.FirstOrDefault()?.TryGetLocalPath() is {} path){_fileDirectory=path;BuildTools();}})));
+        list.Children.Add(Ui.Button(_fileDirectory is null?"Choose a local folder":_fileDirectory,"folder",()=>Run(async()=>{var folder=await _fileDialogs.OpenFolderAsync(this, new(){Title="Browse local files",AllowMultiple=false});if(folder is {} path){_fileDirectory=path;BuildTools();}})));
         list.Children.Add(CommandButton("sftp"));
         if(_fileDirectory is null){list.Children.Add(Ui.Text("Choose a local folder, or open an SSH profile in the SFTP workspace.",11,"Muted"));return list;}
         if(System.IO.Directory.GetParent(_fileDirectory) is {} parent)list.Children.Add(Ui.Button("..","folder",()=>{_fileDirectory=parent.FullName;BuildTools();}));
@@ -120,13 +120,20 @@ public sealed partial class MainWindow
     {
         var info=new FileInfo(path);if(info.Length>2*1024*1024)throw new InvalidOperationException("The inline editor accepts text files up to 2 MiB.");
         var originalTime=info.LastWriteTimeUtc;var bytes=await File.ReadAllBytesAsync(path);if(bytes.Contains((byte)0))throw new InvalidOperationException("This file appears to contain binary data.");
+        async Task VerifyUnchangedAsync()
+        {
+            var current = new FileInfo(path);
+            if (!current.Exists || current.LastWriteTimeUtc != originalTime || current.Length != bytes.Length ||
+                !(await File.ReadAllBytesAsync(path, _windowLifetime.Token)).AsSpan().SequenceEqual(bytes))
+                throw new IOException("The file changed outside Tessera. Reopen it before saving.");
+        }
         var editor=new TextBox{Text=System.Text.Encoding.UTF8.GetString(bytes),AcceptsReturn=true,AcceptsTab=true,TextWrapping=TextWrapping.NoWrap,Height=390,FontFamily=new FontFamily("monospace")};
         var save=Ui.Button("Save file","save",()=>Run(async()=>
         {
-            if(File.GetLastWriteTimeUtc(path)!=originalTime)throw new IOException("The file changed outside Tessera. Reopen it before saving.");
+            await VerifyUnchangedAsync();
             var content=editor.Text??"";if(!await ConfirmAsync("Write changes to disk?",path,"Save file"))return;
             var temp=path+".tessera-"+Guid.NewGuid().ToString("N")+".tmp";
-            try{await File.WriteAllTextAsync(temp,content);if(!OperatingSystem.IsWindows())File.SetUnixFileMode(temp,File.GetUnixFileMode(path));File.Move(temp,path,true);Shell.Report("Saved "+path);}finally{if(File.Exists(temp))File.Delete(temp);}
+            try{await File.WriteAllTextAsync(temp,content,_windowLifetime.Token);await VerifyUnchangedAsync();if(!OperatingSystem.IsWindows())File.SetUnixFileMode(temp,File.GetUnixFileMode(path));File.Move(temp,path,true);Shell.Report("Saved "+path);}finally{if(File.Exists(temp))File.Delete(temp);}
         }),"primary");
         ShowOverlay(Path.GetFileName(path),path,Ui.Stack(editor,save),860);
     }
@@ -164,17 +171,18 @@ public sealed partial class MainWindow
     }
     private async Task LoadReplayAsync()
     {
-        var files=await StorageProvider.OpenFilePickerAsync(new(){Title="Open terminal recording",AllowMultiple=false,FileTypeFilter=[new("Terminal recordings"){Patterns=["*.rtcap.json","*.cast","*.json"]}]});
-        if(files.FirstOrDefault()?.TryGetLocalPath() is not {} path)return;
+        var files=await _fileDialogs.OpenFilesAsync(this, new(){Title="Open terminal recording",AllowMultiple=false,FileTypeFilter=[new("Terminal recordings"){Patterns=["*.rtcap.json","*.cast","*.json"]}]});
+        if(files.FirstOrDefault() is not {} path)return;
         if(new FileInfo(path).Length>64*1024*1024)throw new InvalidOperationException("Recordings over 64 MiB require an indexed streaming player.");
-        var capture=await TerminalCaptureSessionSerializer.LoadFromFileAsync(path);
+        await using var recordingStream=File.OpenRead(path);
+        var capture=await TerminalCaptureSessionFormats.DefaultRegistry.LoadAsync(recordingStream,path,_windowLifetime.Token);
         var document=await Shell.NewTerminalAsync(Shell.Profiles.Document.Profiles[0].Id,start:false);Shell.RenameDocument(document.Id,"Replay · "+Path.GetFileName(path));
         Shell.MarkReplay(document.Id);var session=Shell.GetSession(Shell.Active.Documents[document.Id]);session.Capture.LoadReplay(capture,Path.GetFileName(path));session.Locked=true;Shell.SetTool("Timeline");
     }
     private async Task ExportOutputAsync()
     {
         var session=Shell.ActiveSession;if(session is null)return;
-        var file=await StorageProvider.SaveFilePickerAsync(new(){Title="Export terminal output",SuggestedFileName="terminal-output.txt"});if(file is null)return;
-        await using var stream=await file.OpenWriteAsync();using var writer=new StreamWriter(stream);await writer.WriteAsync(Safety.StripAnsi(session.OutputSnapshot()));Shell.Report("Terminal text exported (bounded recent output)");
+        var path=await _fileDialogs.SaveFileAsync(this, new(){Title="Export terminal output",SuggestedFileName="terminal-output.txt"});if(path is null)return;
+        await using var stream=new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);using var writer=new StreamWriter(stream);await writer.WriteAsync(Safety.StripAnsi(session.OutputSnapshot()));Shell.Report("Terminal text exported (bounded recent output)");
     }
 }

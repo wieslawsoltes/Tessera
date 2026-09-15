@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Tessera.Services;
 using Tessera.Core;
 
@@ -41,6 +42,13 @@ public sealed partial class MainWindow
                 var body = content(value => dialog.Close(value));
                 var root = Ui.Stack(Ui.Text(title,24),body);
                 root.Margin = new Thickness(26); KeyboardNavigation.SetTabNavigation(root,KeyboardNavigationMode.Cycle);
+                // All exit routes (Escape, owner close, cancellation and acceptance)
+                // release password text from detached controls, not only button handlers.
+                dialog.Closed += (_, _) =>
+                {
+                    foreach (var field in root.GetVisualDescendants().OfType<TextBox>().Where(f => f.PasswordChar != '\0'))
+                        field.Text = "";
+                };
                 dialog.Content = new ScrollViewer { Content=root,MaxHeight=710,HorizontalScrollBarVisibility=Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
                 dialog.KeyDown += (_,e) => { if(e.Key==Key.Escape) { e.Handled=true;dialog.Close(cancelled); } };
                 using var cancel = linked.Token.Register(() => Dispatcher.UIThread.Post(() => dialog.Close(cancelled)));

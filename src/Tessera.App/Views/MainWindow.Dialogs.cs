@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.Platform.Storage;
+using Avalonia.VisualTree;
 using RoyalTerminal.Avalonia.Settings;
 using Tessera.Core;
 using Tessera.Services;
@@ -29,13 +30,17 @@ public sealed partial class MainWindow
         var scroll=new ScrollViewer{Content=body,MaxHeight=555,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,1);grid.Children.Add(scroll);
         Q<Border>("OverlayPanel").Width=width;Q<ContentControl>("OverlayContent").Content=grid;Q<Border>("OverlayShade").IsVisible=true;
         KeyboardNavigation.SetTabNavigation(grid,KeyboardNavigationMode.Cycle);
-        Dispatcher.UIThread.Post(()=>body.Focus(),DispatcherPriority.Input);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_closed || !IsOverlayOpen || !ReferenceEquals(Q<ContentControl>("OverlayContent").Content, grid)) return;
+            body.GetVisualDescendants().OfType<Control>().FirstOrDefault(c => c.Focusable && c.IsEffectivelyEnabled && c.IsEffectivelyVisible)?.Focus();
+        }, DispatcherPriority.Input);
     }
     private void DismissOverlay()
     {
         var callback=_onDismiss;_onDismiss=null;
         Q<Border>("OverlayShade").IsVisible=false;Q<ContentControl>("OverlayContent").Content=null;
-        callback?.Invoke();_previousFocus?.Focus();_previousFocus=null;
+        callback?.Invoke();if(!_closed)_previousFocus?.Focus();_previousFocus=null;
     }
     private Task<string?> PromptAsync(string title,string description,string initial,bool password=false)
     {
@@ -170,7 +175,7 @@ public sealed partial class MainWindow
         }
         state.SaveRequested+=(_,_)=>Run(Save);
         state.ApplyRequested+=(_,_)=>Run(async()=>{await Save();if(Shell.ActiveSession is {} session&&state.SelectedProfile?.Id==session.Profile.Id){session.ApplyProfile(Shell.Profiles.Get(session.Profile.Id));Shell.Report("Profile presentation applied. Reconnect to apply transport changes.");}});
-        state.BrowseFontFileRequested+=(_,_)=>Run(async()=>{var files=await StorageProvider.OpenFilePickerAsync(new(){Title="Choose terminal font file",AllowMultiple=false});if(files.FirstOrDefault()?.TryGetLocalPath() is {} path)state.LoadFontFile(path);});
+        state.BrowseFontFileRequested+=(_,_)=>Run(async()=>{var files=await _fileDialogs.OpenFilesAsync(this, new(){Title="Choose terminal font file",AllowMultiple=false});if(files.FirstOrDefault() is {} path)state.LoadFontFile(path);});
         var actions=Ui.Stack(production,remember,
             Ui.Button("Forget stored credentials","lock",()=>Run(async()=>{if(state.SelectedProfile is {} p){await Shell.Profiles.ForgetCredentialsAsync(p.Id);remember.IsChecked=false;state.SshPassword="";state.SshProxyPassword="";Shell.Report("Stored credentials removed");}})),
             Ui.Button("Advanced profile document","code",()=>Run(async()=>{await Save();if(state.SelectedProfile is {} p)ShowAdvancedProfile(p.Id);})));

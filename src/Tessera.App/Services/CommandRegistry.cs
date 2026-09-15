@@ -42,6 +42,7 @@ public sealed class CommandRegistry
     public void ApplyBindings(Dictionary<string, string> bindings)
     {
         var warnings = new List<string>();
+        bool changed = false;
         foreach(var command in _commands)
         {
             var candidate = bindings.GetValueOrDefault(command.Id, command.DefaultGesture);
@@ -50,10 +51,12 @@ public sealed class CommandRegistry
                 warnings.Add($"Invalid shortcut for {command.Title}; using its default.");
                 candidate = command.DefaultGesture;
             }
+            changed |= command.Gesture != candidate;
             command.Gesture = candidate;
         }
         BindingWarnings = warnings;
-        _pending = null;
+        // A shell redraw with unchanged bindings must not cancel a chord in flight.
+        if (changed) _pending = null;
     }
     public string? ValidateBinding(string id, string gesture)
     {

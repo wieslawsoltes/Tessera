@@ -248,7 +248,7 @@ public sealed class ShellController : IDisposable
     public void SetNotes(string notes) { ReplaceWorkspace(Active with { Notes = notes }); Notify(false); }
     public void AddSnippet(Snippet snippet) { if(!Safety.IsSafeCommandInsertion(snippet.Command)) throw new InvalidOperationException("Snippets must be a single command line without control sequences."); Data = Data with { Snippets = [.. Data.Snippets, snippet] }; Notify(true); }
     public void RemoveSnippet(Guid id) { Data = Data with { Snippets = Data.Snippets.Where(s => s.Id != id).ToArray() }; Notify(true); }
-    public void Bind(string command, string gesture) { var bindings = new Dictionary<string,string>(Data.Bindings) { [command] = gesture }; Data = Data with { Bindings = bindings }; Notify(false); }
+    public void Bind(string command, string gesture) { var bindings = new Dictionary<string,string>(Data.Bindings) { [command] = gesture }; Data = Data with { Bindings = bindings }; Notify(true); }
     public void SetBroadcast(bool enabled)
     {
         if(enabled && (ActiveSession is not {} source || !Eligible(source) || Sessions.All.Count(s => Active.Documents.ContainsKey(s.Id) && Eligible(s)) < 2)) throw new InvalidOperationException("Select the active session and at least one other connected, unlocked, non-production target.");

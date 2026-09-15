@@ -23,6 +23,10 @@ SFTP = {
 }
 VAULT = EXTERNAL + "OperatingSystemVaultRoundTripsReplacesAndDeletesUnicodeSecret"
 REQUIRED = {
+    PREFIX + "MenuLifecycleRegressionTests.NativeRootAndEveryMenuItemSurviveShellRedraws",
+    PREFIX + "MenuLifecycleRegressionTests.FirstExportIsNeverReassignedDuringInitializationOrBindingEdits",
+    PREFIX + "MenuLifecycleRegressionTests.EveryCommandIsExposedExactlyOnceInBothMenus",
+    PREFIX + "PtyTransportTests.ChildStandardOutputReachesThePseudoTerminalWithoutUiOrParser",
     PREFIX + "NativeUiTests.LocalTerminalExecutesAnActualPtyCommand",
     PREFIX + "AcceptanceUiTests.LivePtySurvivesTwoNativeWindowTransfersAndAsyncDisposal",
 }

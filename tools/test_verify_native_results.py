@@ -34,7 +34,7 @@ class EvidenceTests(unittest.TestCase):
         cases = [(n, o) for n, o in self.cases if n not in REQUIRED]
         result = self.check(cases=cases)
         self.assertFalse(result['passed'])
-        self.assertEqual(2, len([p for p in result['problems'] if p.startswith('Missing result:')]))
+        self.assertEqual(len(REQUIRED), len([p for p in result['problems'] if p.startswith('Missing result:')]))
 
     def test_discovery_cannot_hide_missing_pty_tests(self):
         self.assertFalse(self.check(names=[], cases=[])['passed'])
