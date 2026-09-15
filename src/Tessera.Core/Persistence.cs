@@ -15,9 +15,7 @@ public sealed class WorkspaceStore(string path)
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (new FileInfo(Path).Length > 16 * 1024 * 1024) throw new InvalidDataException("Workspace file is too large.");
-            await using var stream = File.OpenRead(Path);
-            var document = await JsonSerializer.DeserializeAsync<AppDocument>(stream, Json, cancellationToken) ?? throw new InvalidDataException("Empty workspace file.");
+            var document = await AtomicFile.ReadJsonAsync<AppDocument>(Path, 16 * 1024 * 1024, cancellationToken) ?? throw new InvalidDataException("Empty workspace file.");
             Validate(document);
             return document;
         }
@@ -28,25 +26,19 @@ public sealed class WorkspaceStore(string path)
     {
         Validate(document);
         await _gate.WaitAsync(cancellationToken);
-        string temporary = Path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 16384, FileOptions.WriteThrough | FileOptions.Asynchronous))
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(document, Json);
+            if (bytes.Length > 16 * 1024 * 1024) throw new InvalidDataException("Workspace file exceeds 16 MiB.");
+            AtomicFile.EnsurePrivateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+            if (File.Exists(Path))
             {
-                await JsonSerializer.SerializeAsync(stream, document, Json, cancellationToken);
-                await stream.FlushAsync(cancellationToken);
-                stream.Flush(flushToDisk: true);
+                File.Copy(Path, Path + ".bak", true);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Path + ".bak", UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            if (File.Exists(Path)) File.Copy(Path, Path + ".bak", true);
-            File.Move(temporary, Path, true);
+            await AtomicFile.WriteAsync(Path, bytes, cancellationToken);
         }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-            _gate.Release();
-        }
+        finally { _gate.Release(); }
     }
 
     public static void Validate(AppDocument document)
@@ -55,8 +47,9 @@ public sealed class WorkspaceStore(string path)
         foreach (var workspace in document.Workspaces) Layout.Validate(workspace);
         if (document.Workspaces.SelectMany(w => w.Documents.Keys).Distinct().Count() != document.Workspaces.Sum(w => w.Documents.Count)) throw new InvalidDataException("Duplicate document across workspaces.");
         if (document.Preferences is null || document.Preferences.Theme is not ("Obsidian" or "Porcelain" or "Blueprint") || !double.IsFinite(document.Preferences.FontSize) || document.Preferences.FontSize is < 8 or > 36 || document.Bindings is null || document.Snippets is null || document.Layouts is null) throw new InvalidDataException("Invalid preferences.");
+        if (!double.IsFinite(document.Preferences.LineHeight) || document.Preferences.LineHeight is < 1 or > 2 || document.Preferences.CursorStyle is not ("Block" or "Bar" or "Underline") || document.Preferences.HistoryRetentionDays is < 1 or > 3650) throw new InvalidDataException("Invalid terminal preferences.");
         if (document.Snippets.Length > 1000 || document.Layouts.Length > 100) throw new InvalidDataException("Too many saved items.");
-        foreach (var saved in document.Layouts) Layout.Validate(new Workspace(saved.Id, saved.Name, "", saved.Root, saved.Documents));
+        foreach (var saved in document.Layouts) Layout.Validate(new Workspace(saved.Id, saved.Name, "", saved.Root, saved.Documents) { Floating = saved.Floating });
     }
 }
 

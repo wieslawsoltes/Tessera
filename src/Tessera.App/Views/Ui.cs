@@ -54,6 +54,6 @@ public static class Ui
     public static Border Card(Control child, Thickness? padding = null) => new() { Child = child, Padding = padding ?? new Thickness(16), BorderBrush = ThemeManager.Brush("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Background = ThemeManager.Brush("Surface") };
     public static StackPanel Stack(params Control[] children) { var s = new StackPanel { Spacing = 12 }; foreach (var c in children) s.Children.Add(c); return s; }
     public static Grid Row(string columns, params Control[] children) { var grid = new Grid { ColumnDefinitions = new ColumnDefinitions(columns) }; for (int i = 0; i < children.Length; i++) { Grid.SetColumn(children[i], i); grid.Children.Add(children[i]); } return grid; }
-    public static Control Field(string label, Control input) => Stack(Text(label, 11, "Muted"), input);
+    public static Control Field(string label, Control input) { AutomationProperties.SetName(input,label); return Stack(Text(label,11,"Muted"),input); }
     public static TextBox Input(string? text = null, string? watermark = null) => new() { Text = text, PlaceholderText = watermark, HorizontalAlignment = HorizontalAlignment.Stretch };
 }

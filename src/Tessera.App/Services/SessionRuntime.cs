@@ -10,7 +10,7 @@ using Tessera.Core;
 namespace Tessera.Services;
 
 /// <summary>One terminal, one session lifecycle, one capture runtime. Reparenting never starts or stops a session.</summary>
-public sealed class SessionRuntime : IDisposable
+public sealed class SessionRuntime : IDisposable, IAsyncDisposable
 {
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -22,12 +22,30 @@ public sealed class SessionRuntime : IDisposable
     private bool _disposed;
     private bool _replaySlot;
     private Task? _startup;
+    private Task? _disposeTask;
+    private SessionOutputLog? _log;
+    public event Action<string>? Diagnostic;
+    public async Task FlushLogAsync() { if(Interlocked.Exchange(ref _log, null) is {} log) await log.DisposeAsync(); }
+    public string CursorShape { get; set; } = "Block";
+    public bool CursorBlink { get; set; } = true;
+    public string? WorkingDirectory { get; internal set; }
     public string DocumentTitle { get; set; } = "Terminal";
     public Guid Id { get; }
     public TerminalSessionProfile Profile { get; private set; }
     public GuardedTerminal Terminal { get; }
     public TerminalCaptureRuntime Capture { get; }
-    public string State { get; private set; } = "Ready";
+    private string _state = "Ready";
+    public string State
+    {
+        get => _state;
+        private set
+        {
+            if (_state == value) return;
+            _state = value;
+            if (Profile.Logging.EventLogEnabled)
+                Diagnostic?.Invoke($"{Safety.CleanTitle(DocumentTitle)} · {value}");
+        }
+    }
     public string? Error { get; private set; }
     public bool IsProduction { get; private set; }
     public bool Locked
@@ -76,6 +94,7 @@ public sealed class SessionRuntime : IDisposable
         Profile = profile; var a = profile.Appearance;
         Terminal.FontFamilyName = a.FontFamilyName; Terminal.FontSource = a.FontSource; Terminal.FontFilePath = a.FontFilePath ?? "";
         Terminal.TerminalFontSize = a.FontSize; Terminal.AutoScroll = a.AutoScroll; Terminal.ScrollbackLimit = profile.Layout.ScrollbackLimit;
+        Terminal.BackspaceSendsControlH = profile.Behavior.BackspaceSendsControlH;
         Terminal.ReflowOnResize = profile.Behavior.ReflowOnResize; Terminal.SixelGraphicsEnabled = profile.Behavior.SixelGraphicsEnabled;
         Terminal.TextHighlightingMode = a.TextHighlightingMode;
         uint? Parse(string? value) => Avalonia.Media.Color.TryParse(value, out var c) ? c.ToUInt32() : null;
@@ -107,10 +126,22 @@ public sealed class SessionRuntime : IDisposable
         try
         {
             if(_disposed || IsReplay) return;
-            if(restart) Terminal.StopPty(); else if(IsRunning) return;
+            if(restart) { Terminal.StopPty(); await FlushLogAsync(); } else if(IsRunning) return;
             if(_design) { State = "Design fixture"; WriteFixture(); Changed?.Invoke(); return; }
+            if(Profile.Logging.Enabled)
+            {
+                await FlushLogAsync();
+                _log = new SessionOutputLog(Profile.Logging, message => Avalonia.Threading.Dispatcher.UIThread.Post(() => Diagnostic?.Invoke(message)));
+            }
             State = "Connecting"; Error = null; Locked = IsProduction; Changed?.Invoke();
-            await Terminal.StartSessionAsync(_profiles.RuntimeOptions(Profile), true, _lifetime.Token);
+            var options = await _profiles.RuntimeOptionsAsync(Profile, _lifetime.Token);
+            if (options is SshTransportOptions ssh)
+            {
+                Terminal.SecurityContext.Begin(ssh, _lifetime.Token);
+                options = ssh with { ExpectedHostKeyFingerprintSha256 = null }; // The shared validator also enforces revoked-key policy.
+            }
+            await Terminal.StartSessionAsync(options, true, _lifetime.Token);
+            Terminal.ApplyCursor(CursorShape, CursorBlink);
             if(_disposed) { Terminal.StopPty(); return; }
             State = "Connected"; Changed?.Invoke();
         }
@@ -132,6 +163,7 @@ public sealed class SessionRuntime : IDisposable
     public string OutputSnapshot() { lock(_outputLock) return _output.ToString(); }
     private void Receive(object? sender, TerminalDataEventArgs e)
     {
+        _log?.Receive(e.DataSpan);
         lock(_outputLock)
         {
             var chars = new char[Encoding.UTF8.GetMaxCharCount(e.Data.Length)];
@@ -151,15 +183,37 @@ public sealed class SessionRuntime : IDisposable
     }
     public void Dispose()
     {
-        if(_disposed) return;
+        var task = DisposeAsync().AsTask();
+        if (!task.IsCompletedSuccessfully)
+            _ = task.ContinueWith(t => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                Diagnostic?.Invoke("Session cleanup failed: " + t.Exception!.GetBaseException().Message)),
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+    }
+    public ValueTask DisposeAsync() => new(_disposeTask ??= DisposeCoreAsync());
+    private async Task DisposeCoreAsync()
+    {
         _disposed = true; _lifetime.Cancel(); BroadcastTarget = false;
-        Capture.Dispose(); Terminal.DataReceived -= Receive; Terminal.StopPty(); State = "Disposed";
+        Terminal.SecurityContext.Cancel();
+        // Join startup before freeing key material or stopping its newly-created transport.
+        await _lifecycle.WaitAsync();
+        try
+        {
+            Terminal.FlushPendingTransportOutput();
+            Terminal.StopPty();
+            Terminal.DataReceived -= Receive;
+            Capture.Dispose();
+            Terminal.SecurityContext.Dispose();
+            await FlushLogAsync();
+            State = "Disposed";
+        }
+        finally { _lifecycle.Release(); _lifetime.Dispose(); }
     }
 }
 
 public sealed class SessionRegistry(ProfileRepository profiles, bool design) : IDisposable
 {
     private readonly Dictionary<Guid, SessionRuntime> _sessions = [];
+    private readonly List<Task> _closing = [];
     public IReadOnlyCollection<SessionRuntime> All => _sessions.Values;
     public SessionRuntime Get(TerminalDocument document)
     {
@@ -169,6 +223,21 @@ public sealed class SessionRegistry(ProfileRepository profiles, bool design) : I
         _sessions.Add(document.Id, session); return session;
     }
     public SessionRuntime? Find(Guid id) => _sessions.GetValueOrDefault(id);
-    public void Close(Guid id) { if(_sessions.Remove(id, out var session)) session.Dispose(); }
-    public void Dispose() { foreach(var session in _sessions.Values) session.Dispose(); _sessions.Clear(); }
+    public void Close(Guid id)
+    {
+        if (!_sessions.Remove(id, out var session)) return;
+        _closing.RemoveAll(t => t.IsCompletedSuccessfully);
+        _closing.Add(session.DisposeAsync().AsTask());
+    }
+    public async Task DrainAsync()
+    {
+        foreach (var id in _sessions.Keys.ToArray()) Close(id);
+        await Task.WhenAll(_closing); _closing.Clear();
+    }
+    public void Dispose()
+    {
+        foreach(var session in _sessions.Values) session.Dispose(); _sessions.Clear();
+        foreach (var task in _closing) _ = task.ContinueWith(t => System.Diagnostics.Trace.TraceError(t.Exception!.ToString()),
+            CancellationToken.None,TaskContinuationOptions.OnlyOnFaulted,TaskScheduler.Default);
+    }
 }

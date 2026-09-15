@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet test tests/Tessera.Tests/Tessera.Tests.csproj -c Release --logger trx
-      - uses: actions/upload-artifact@v4
+      - run: dotnet test tests/Tessera.Tests -c Release --logger trx
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: core-test-results
@@ -35,41 +35,140 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '10.0.x'
+      - name: Create isolated macOS test keychain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/tessera-tests.keychain-db"
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
       - name: Build native application
-        run: dotnet build src/Tessera.App/Tessera.App.csproj -c Release
-      - name: Native UI, visual, keyboard and real PTY tests
-        run: dotnet test tests/Tessera.App.Tests/Tessera.App.Tests.csproj -c Release --logger trx --blame-hang-timeout 2m
-      - name: Publish self-contained unsigned application
-        run: dotnet publish src/Tessera.App/Tessera.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
+        run: dotnet build src/Tessera.App -c Release -warnaserror
+      - name: Native UI, rendering, keyboard, PTY and platform vault tests
+        env:
+          TESSERA_VAULT_TESTS: ${{ runner.os != 'Linux' && '1' || '0' }}
+        run: dotnet test tests/Tessera.App.Tests -c Release --logger trx --blame-hang-timeout 2m
+      - name: Publish self-contained application
+        run: dotnet publish src/Tessera.App -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishTrimmed=false -o artifacts/app
       - name: Collect dependency notices
         run: python tools/collect_notices.py
-      - name: Package native alpha with revision and checksums
+      - name: Package with revision and checksums
         run: python tools/package.py --rid ${{ matrix.rid }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Tessera-${{ matrix.rid }}-unsigned
+          name: Tessera-${{ matrix.rid }}
           compression-level: 0
           path: artifacts/packages
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: native-validation-${{ matrix.rid }}
           path: |
             artifacts/screenshots
             **/TestResults/*.trx
+      - name: Delete isolated keychain
+        if: always() && runner.os == 'macOS'
+        run: security delete-keychain "$RUNNER_TEMP/tessera-tests.keychain-db"
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install ephemeral SSH and Secret Service fixtures
+        run: sudo apt-get update && sudo apt-get install -y openssh-server libsecret-tools gnome-keyring dbus-x11 xvfb xdotool imagemagick
+      - run: bash eng/openssh-fixture.sh
+      - name: Real SFTP, encrypted key, multi-factor authentication and Linux vault
+        shell: bash
+        env:
+          TESSERA_VAULT_TESTS: '1'
+        run: |
+          export XDG_DATA_HOME="$RUNNER_TEMP/tessera-secret-service"
+          mkdir -p "$XDG_DATA_HOME"
+          dbus-run-session -- bash -eu -o pipefail -c '
+            password=$(openssl rand -hex 24)
+            printf "%s" "$password" | gnome-keyring-daemon --unlock --components=secrets
+            dotnet test tests/Tessera.App.Tests -c Release --filter FullyQualifiedName~ExternalAcceptanceTests --logger trx --blame-hang-timeout 2m
+          '
+      - name: Desktop X11 smoke test
+        shell: bash
+        run: |
+          dotnet build src/Tessera.App -c Release
+          xvfb-run -a -s '-screen 0 1600x1000x24' bash eng/desktop-smoke.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: integration-evidence
+          path: |
+            **/TestResults/*.trx
+            artifacts/desktop
+      - name: Stop isolated SSH service
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/tessera-sshd/sshd.pid"; then sudo kill "$(cat "$RUNNER_TEMP/tessera-sshd/sshd.pid")" || true; fi
+          sudo userdel -r tessera-integration || true
+          rm -rf "$RUNNER_TEMP/tessera-sshd" "$RUNNER_TEMP/tessera-secret-service"
   source:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Archive exact source tree
-        run: git archive --format=zip HEAD -o Tessera-native-source.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: git archive --format=zip HEAD -o Tessera-native-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Tessera-source
           path: Tessera-native-source.zip
+  attest:
+    needs: [core-tests, native-build, integration, source]
+    if: github.event_name != 'pull_request' && github.repository == 'wieslawsoltes/Tessera' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/acceptance-completion')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Tessera-*
+          path: distribution
+          merge-multiple: true
+      - name: Sign build provenance with GitHub OIDC and Sigstore
+        id: provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: |
+            distribution/*.zip
+            distribution/*.tar.gz
+          create-storage-record: false
+      - name: Verify signed bundles against this repository and workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" distribution/provenance.sigstore.json
+          for artifact in distribution/*.zip distribution/*.tar.gz; do
+            test -f "$artifact" || continue
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --bundle "$BUNDLE" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" --format json > "$artifact.verification.json"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Tessera-attested-distribution
+          compression-level: 0
+          path: distribution

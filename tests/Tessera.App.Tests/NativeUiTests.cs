@@ -172,21 +172,17 @@ public sealed class NativeUiTests
     [AvaloniaFact]
     public async Task LocalTerminalExecutesAnActualPtyCommand()
     {
-        var window = await OpenAsync(design: false);
+        using var directory = new AcceptanceDirectory();
+        var token = TestContext.Current.CancellationToken;
+        var window = await PtyTestFixture.OpenAsync(directory.Path, token);
         try
         {
-            var session = window.Shell.ActiveSession!;
-            Assert.True(session.IsRunning, session.Error ?? session.State);
-            var suffix = Guid.NewGuid().ToString("N");
-            var marker = "TESSERA_PTY_" + suffix;
-            // The complete marker is absent from the command line, so terminal echo cannot make this assertion pass.
-            var command = OperatingSystem.IsWindows()
-                ? "echo TESSERA_PTY_" + suffix
-                : "printf 'TESSERA_PTY_%s\\n' '" + suffix + "'";
-            session.Send(command + "\r");
-            for(var attempt = 0; attempt < 60 && !session.OutputSnapshot().Contains(marker, StringComparison.Ordinal); attempt++) await Task.Delay(100);
-            Assert.Contains(marker, session.OutputSnapshot());
+            await PtyTestFixture.AssertCommandAsync(window.Shell.ActiveSession!, "TESSERA_PTY_", token);
         }
-        finally { window.CloseForTests(); }
+        finally
+        {
+            try { await window.Shell.PrepareShutdownAsync(); }
+            finally { window.CloseForTests(); }
+        }
     }
 }

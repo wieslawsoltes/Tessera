@@ -1,3 +1,9 @@
+# Tessera implementation ledger
+
+**Current acceptance revision: 0.2.0-preview.1.** The software acceptance work is recorded in [ACCEPTANCE.md](ACCEPTANCE.md); distribution verification is in [SIGNING.md](SIGNING.md). The following section is retained as historical context for the initial 0.1.0 alpha and must not be read as the current feature status.
+
+<details><summary>Historical initial-alpha ledger</summary>
+
 # Tessera native implementation ledger
 
 ## Product and implementation boundary
@@ -80,3 +86,5 @@ Full parity still includes cross-window drag docking and OS drag/drop, arbitrary
 GPU texture interoperability is not the current renderer; the shader pipeline operates on RoyalTerminal's default Skia path. Native VT support does not imply a completed graphics-backend compatibility or performance certification.
 
 Touch/gesture delivery, IME across representative systems, VoiceOver/Narrator/Orca auditing, multi-monitor DPI migration and physical serial/SSH interoperability need representative hardware and real services. Windows/macOS signing, Apple notarization, installers, automatic updates and application-store distribution are not configured. Current packages are explicitly unsigned alpha builds.
+
+</details>

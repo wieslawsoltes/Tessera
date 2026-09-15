@@ -22,7 +22,7 @@ public sealed partial class MainWindow : Window
     private bool _initializing;
     private Task? _initialization;
     private readonly Dictionary<Guid, Window> _floating = [];
-    private readonly Dictionary<Guid, ScrollViewer> _floatingHosts = [];
+    private readonly Dictionary<Guid, DockHost> _floatingHosts = [];
     public ShellController Shell { get; }
     public CommandRegistry Commands => _commands;
     public bool IsOverlayOpen => Q<Border>("OverlayShade").IsVisible;
@@ -35,6 +35,7 @@ public sealed partial class MainWindow : Window
         _dock = new DockHost(this, Shell); Q<ContentControl>("DockSurface").Content = _dock;
         ConfigureCommands();
         RegisterAdvancedCommands();
+        RegisterAcceptanceCommands();
         Shell.SessionCreated += ConfigureSession;
         Shell.Profiles.Saved += () =>
         {
@@ -42,12 +43,12 @@ public sealed partial class MainWindow : Window
             {
                 session.ApplyProductionPolicy(Shell.Profiles.Production.Contains(session.Profile.Id));
                 var profile = Shell.Profiles.Document.Profiles.FirstOrDefault(p => p.Id == session.Profile.Id);
-                if(profile is not null) session.ApplyProfile(profile);
+                if(profile is not null) { session.ApplyProfile(profile); Shell.ApplyTerminalPreferences(session); }
             }
             Shell.SetBroadcast(false);
         };
         Shell.Changed += render => { if(_closed) return; if(render) QueueRender(); else RefreshStatus(); };
-        Shell.Profiles.PasswordPrompt = title => PromptAsync(title, "Credentials stay in memory and are never written to workspace files.", "", password: true);
+        ConfigureSecurityWorkflows();
         Q<Button>("PaletteButton").Click += (_, _) => ShowPalette();
         Q<Button>("ThemeButton").Click += (_, _) => CycleTheme();
         Q<Button>("ExploreButton").Click += (_, _) => ShowAbout();
@@ -64,10 +65,11 @@ public sealed partial class MainWindow : Window
             Run(async () =>
             {
                 if(!Shell.DesignMode && Shell.Data.Preferences.ConfirmClose && Shell.Sessions.All.Any(s => s.IsRunning) && !await ConfirmAsync("Close Tessera?", "Running terminal processes will be stopped. Layouts and notes will be saved.", "Close application")) return;
-                await Shell.FlushAsync(); _closing = true; Close();
+                if(!await TryCloseSftpAsync())return;
+                await Shell.PrepareShutdownAsync(); _closing = true; Close();
             });
         };
-        Closed += (_, _) => { _closed = true; _dock.DetachAll(); foreach(var floating in _floating.Values.ToArray()) floating.Close(); Shell.Dispose(); };
+        Closed += (_, _) => { _closed = true; _windowLifetime.Cancel(); _dock.DetachAll(); foreach(var floating in _floating.Values.ToArray()) floating.Close(); Shell.Dispose(); };
         SizeChanged += (_, _) => UpdateResponsiveLayout();
         Q<GridSplitter>("ToolsSplitter").AddHandler(PointerReleasedEvent, (_, _) =>
         {
@@ -80,7 +82,7 @@ public sealed partial class MainWindow : Window
     private async Task InitializeCoreAsync()
     {
         _initializing = true;
-        try { await Shell.InitializeAsync(); _commands.ApplyBindings(Shell.Data.Bindings); RenderShell(); }
+        try { await Shell.InitializeAsync(); _commands.ApplyBindings(Shell.Data.Bindings); RenderShell(); if(!Shell.DesignMode && Shell.Recovery.Store.List().Length is > 0 and var recovered) Shell.Report($"{recovered} unsaved encrypted recordings · Tools → Recover unsaved recordings"); }
         finally { _initializing = false; RefreshStatus(); }
     }
     public async void Run(Func<Task> action)
@@ -97,8 +99,7 @@ public sealed partial class MainWindow : Window
     private void ConfigureSession(SessionRuntime session)
     {
         session.Terminal.CloseRequested += (_, _) => Dispatcher.UIThread.Post(() => Run(() => CloseTabAsync(session.Id)));
-        session.Terminal.TerminalFontSize = Shell.Data.Preferences.FontSize * .75;
-        if(!string.IsNullOrWhiteSpace(Shell.Data.Preferences.FontFamily)) session.Terminal.FontFamilyName = Shell.Data.Preferences.FontFamily;
+        Shell.ApplyTerminalPreferences(session);
         session.Terminal.PasteSafetyPolicy = Enum.TryParse<TerminalPasteSafetyPolicy>(session.Profile.Behavior.PasteSafetyPolicy, true, out var paste) && paste != TerminalPasteSafetyPolicy.None ? paste : TerminalPasteSafetyPolicy.ConfirmUnsafe;
         session.Terminal.ShaderAnimationEnabled = !Shell.Data.Preferences.ReducedMotion;
         session.Terminal.UnsafePasteHandler = async context =>
@@ -120,7 +121,7 @@ public sealed partial class MainWindow : Window
         Add("new", "New terminal", "File", "add", primary+"+Shift+T", async()=>{await Shell.NewTerminalAsync();});
         Add("new-workspace", "New workspace", "File", "layout", "", async()=> { var name=await PromptAsync("New workspace", "Give this group of sessions a purpose.", "Untitled workspace"); if(!string.IsNullOrWhiteSpace(name)) Shell.AddWorkspace(name); });
         Add("rename-workspace", "Rename workspace", "File", "note", "", async()=> {var name=await PromptAsync("Rename workspace", "Workspace name",Shell.Active.Name);if(!string.IsNullOrWhiteSpace(name))Shell.RenameWorkspace(name);});
-        Add("remove-workspace", "Remove workspace", "File", "close", "", async()=>{if(await ConfirmAsync("Remove workspace?", "All sessions in this workspace will be stopped.","Remove workspace"))Shell.RemoveWorkspace();});
+        Add("remove-workspace", "Remove workspace", "File", "close", "", async()=>{if(await ConfirmAsync("Remove workspace?", "All sessions in this workspace will be stopped.","Remove workspace")){await Shell.RetainWorkspaceCapturesAsync();Shell.RemoveWorkspace();}});
         Add("profiles", "Connections & profiles", "File", "server", "", ()=>Do(()=>ShowProfiles()));
         Add("close", "Close active terminal", "File", "close", primary+"+Shift+W", ()=>Shell.ActiveDocumentId is {} id ? CloseTabAsync(id) : Task.CompletedTask,HasSession);
         Add("save", "Save workspace", "File", "save", primary+"+Shift+S", Shell.FlushAsync);
@@ -144,8 +145,8 @@ public sealed partial class MainWindow : Window
         Add("zoom-out", "Decrease terminal font", "View", "close", primary+"+OemMinus",()=>Do(()=>ChangeFont(-1)));
         Add("split-right", "Split right", "Session", "split", primary+"+Shift+D",()=>Shell.SplitAsync(DockEdge.Right),HasSession);
         Add("split-down", "Split down", "Session", "rows", primary+"+Shift+E",()=>Shell.SplitAsync(DockEdge.Bottom),HasSession);
-        Add("next-pane", "Focus next pane", "Session", "right", "Alt+Right",()=>Do(()=>_dock.FocusNext(1)));
-        Add("previous-pane", "Focus previous pane", "Session", "right", "Alt+Left",()=>Do(()=>_dock.FocusNext(-1)));
+        Add("next-pane", "Focus next pane", "Session", "right", "Alt+PageDown",()=>Do(()=>_dock.FocusNext(1)));
+        Add("previous-pane", "Focus previous pane", "Session", "right", "Alt+PageUp",()=>Do(()=>_dock.FocusNext(-1)));
         Add("grow-pane", "Grow pane horizontally", "Session", "split", "Alt+Shift+Right",()=>Do(()=>_dock.ResizeActive(SplitAxis.Columns,.05)));
         Add("shrink-pane", "Shrink pane horizontally", "Session", "split", "Alt+Shift+Left",()=>Do(()=>_dock.ResizeActive(SplitAxis.Columns,-.05)));
         Add("next-tab", "Next terminal tab", "Session", "terminal", "Ctrl+Tab",()=>Do(()=>SelectTab(1)),HasSession);
@@ -189,7 +190,7 @@ public sealed partial class MainWindow : Window
         if(Q<Button>("PaletteButton").Content is Grid paletteGrid)
             paletteGrid.Children.OfType<TextBlock>().Last().Text = OperatingSystem.IsMacOS() ? "⌘ K" : "Ctrl K";
         Q<TextBlock>("Avatar").Text = Shell.DesignMode ? "WS" : new string(Environment.UserName.Where(char.IsLetterOrDigit).Take(2).ToArray()).ToUpperInvariant();
-        _dock.Rebuild(); BuildTools(); UpdateResponsiveLayout(); RefreshStatus();
+        if(!DockDragActive) { _dock.DetachAll(); foreach(var host in _floatingHosts.Values) host.DetachAll(); ReconcileFloatingWindows(); _dock.Rebuild(); foreach(var host in _floatingHosts.Values) host.Rebuild(); } BuildTools(); UpdateResponsiveLayout(); RefreshStatus();
     }
     private void BuildMenu()
     {
@@ -240,7 +241,7 @@ public sealed partial class MainWindow : Window
         var saved=Ui.Text("SAVED LAYOUTS",9,"Faint");saved.LetterSpacing=1.2;saved.Margin=new Thickness(8,28,0,10);side.Children.Add(saved);
         if(Shell.Data.Layouts.Length==0)side.Children.Add(Ui.Button("Save this arrangement","save",()=>_commands["save-layout"].Execute(null),"sideItem"));
         foreach(var layout in Shell.Data.Layouts)
-            side.Children.Add(Ui.Button(layout.Name,"layout",()=>Run(async()=>{if(!Shell.Active.Documents.Any()||await ConfirmAsync("Restore layout?","Current workspace sessions will be closed and replaced by disconnected slots.","Restore layout"))Shell.RestoreLayout(layout);}),"sideItem"));
+            side.Children.Add(Ui.Button(layout.Name,"layout",()=>Run(async()=>{if(!Shell.Active.Documents.Any()||await ConfirmAsync("Restore layout?","Current workspace sessions will be closed and replaced by disconnected slots.","Restore layout")){await Shell.RetainWorkspaceCapturesAsync();Shell.RestoreLayout(layout);}}),"sideItem"));
     }
     private void BuildToolbar()
     {
@@ -254,8 +255,8 @@ public sealed partial class MainWindow : Window
     {
         if(!Dispatcher.UIThread.CheckAccess()){Dispatcher.UIThread.Post(RefreshStatus);return;}
         if(_closed||!Shell.Initialized||_initializing)return;
-        _dock.UpdateStatus();Q<TextBlock>("SessionCount").Text=$"{Shell.Active.Documents.Count} sessions";
-        var session=Shell.ActiveSession;Q<TextBlock>("WorkingDirectoryText").Text=session?.Profile.Transport.Pty.WorkingDirectory??"~";
+        _dock.UpdateStatus();foreach(var host in _floatingHosts.Values)host.UpdateStatus();Q<TextBlock>("SessionCount").Text=$"{Shell.Active.Documents.Count} sessions";
+        var session=Shell.ActiveSession;Q<TextBlock>("WorkingDirectoryText").Text=session?.WorkingDirectory??session?.Profile.Transport.Pty.WorkingDirectory??"~";
         Q<TextBlock>("Status").Text=(Shell.DesignMode?"DESIGN FIXTURE  ·  ":"")+Shell.Status+"  ·  RoyalTerminal "+(session?.Terminal.IsUsingNativeVtProcessor==true?"Ghostty VT":"Managed VT");
         foreach(var command in _commands.All)command.Refresh();
     }
@@ -284,16 +285,17 @@ public sealed partial class MainWindow : Window
     }
     private void SelectTab(int delta)
     {
-        var group=Layout.Groups(Shell.Active.Root).Single(g=>g.Id==Shell.ActiveGroupId);if(group.Tabs.Length==0)return;
+        var group=Layout.Groups(Shell.Active).Single(g=>g.Id==Shell.ActiveGroupId);if(group.Tabs.Length==0)return;
         var index=Array.IndexOf(group.Tabs,Shell.ActiveDocumentId??Guid.Empty);Shell.Select(group.Tabs[(index+delta+group.Tabs.Length)%group.Tabs.Length]);
     }
     private void CycleTheme()=>Shell.SetTheme(ThemeManager.Current switch{"Obsidian"=>"Porcelain","Porcelain"=>"Blueprint",_=>"Obsidian"});
-    private void ChangeFont(double delta)=>Shell.SetPreferences(Shell.Data.Preferences with{FontSize=Math.Clamp(Shell.Data.Preferences.FontSize+delta,8,36)});
+    private void ChangeFont(double delta)=>Shell.SetPreferences(Shell.Data.Preferences with{FontSize=Math.Clamp(Shell.Data.Preferences.FontSize+delta,8,36),OverrideProfileFont=true});
     public async Task CloseTabAsync(Guid id)
     {
         if(!Shell.Active.Documents.TryGetValue(id,out var document))return;var session=Shell.Sessions.Find(id);
         if((document.Pinned||(Shell.Data.Preferences.ConfirmClose&&session?.IsRunning==true))&&!await ConfirmAsync("Close "+document.Title+"?","This stops its process. Other panes and sessions remain open.","Close terminal"))return;
-        if(_floating.Remove(id,out var floating))floating.Close();Shell.CloseDocument(id);
+        if(session is not null) { await Shell.Recovery.RetainOnCloseAsync(session);  }
+        Shell.CloseDocument(id);
     }
     private async Task RenameTabAsync(Guid id)
     {
@@ -311,16 +313,60 @@ public sealed partial class MainWindow : Window
         return new ContextMenu{ItemsSource=new[]{Item("Rename…",()=>RenameTabAsync(id)),Item("Pin / unpin",()=>{Shell.TogglePin(id);return Task.CompletedTask;}),Item("Duplicate connection",async()=>{await Shell.NewTerminalAsync(Shell.Active.Documents[id].ProfileId);}),Item("Float in window",()=>{FloatTerminal(id);return Task.CompletedTask;}),Item("Move right",()=>{var groups=Layout.Groups(Shell.Active.Root).ToArray();var target=groups.Last();Shell.Move(id,target.Id,DockEdge.Right);return Task.CompletedTask;}),Item("Close",()=>CloseTabAsync(id))}};
     }
     public void ShowSessionMenu(Guid id){Shell.Select(id);ShowPalette("Session");}
-    public bool IsFloating(Guid id)=>_floating.ContainsKey(id);
-    public void ReturnFloating(Guid id){if(_floating.Remove(id,out var floating))floating.Close();}
+    public bool DockDragActive { get; set; }
+    private bool _reconcilingWindows;
+    public bool IsFloating(Guid id) => Shell.Active.Floating.Any(f => Layout.Groups(f.Root).Any(g => g.Tabs.Contains(id)));
+    public void ReturnFloating(Guid id)
+    {
+        if(IsFloating(id)) Shell.Move(id, Layout.Groups(Shell.Active.Root).First().Id, DockEdge.Center);
+    }
+    public void RefreshDockWindows() => QueueRender();
     private void FloatTerminal(Guid id)
     {
-        if(_floating.TryGetValue(id,out var existing)){existing.Activate();return;}
-        var session=Shell.GetSession(Shell.Active.Documents[id]);_dock.DetachAll();
-        var host=new ScrollViewer{Content=session.Terminal};var window=new Window{Title=Shell.Active.Documents[id].Title+" — Tessera",Width=900,Height=580,MinWidth=360,MinHeight=240,Background=ThemeManager.Brush("TerminalBg"),Content=host};
-        _floating[id]=window;_floatingHosts[id]=host;
-        window.Closed+=(_,_)=>{host.Content=null;_floating.Remove(id);_floatingHosts.Remove(id);QueueRender();};
-        window.Closing+=(_,_)=>host.Content=null;QueueRender();window.Show(this);session.Terminal.Focus();
+        var existing = Shell.Active.Floating.FirstOrDefault(f => Layout.Groups(f.Root).Any(g => g.Tabs.Contains(id)));
+        if(existing is not null && _floating.TryGetValue(existing.Id, out var view)) { view.Activate(); return; }
+        Shell.Apply(Layout.Float(Shell.Active, id)); Shell.Select(id);
+    }
+    private void ReconcileFloatingWindows()
+    {
+        _reconcilingWindows = true;
+        try
+        {
+            foreach(var id in _floating.Keys.Where(id => !Shell.Active.Floating.Any(f => f.Id == id)).ToArray())
+            {
+                _floatingHosts[id].DetachAll(); _floatingHosts.Remove(id);
+                var removed = _floating[id]; _floating.Remove(id); removed.Close();
+            }
+            foreach(var model in Shell.Active.Floating)
+            {
+                if(_floating.TryGetValue(model.Id, out var current)) { current.Background = ThemeManager.Brush("Surface"); continue; }
+                var id = model.Id; var workspaceId = Shell.Active.Id;
+                var host = new DockHost(this, Shell, id);
+                var caption = Ui.Row("*,Auto", Ui.Text(Shell.Active.Name + " · Tessera", 12, "Muted"),
+                    Ui.Button("Return all tabs", "layout", () => Shell.Apply(Layout.ReturnWindow(Shell.Active, id))));
+                caption.Margin = new Thickness(12,8); var content = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
+                content.Children.Add(caption); Grid.SetRow(host,1); content.Children.Add(host);
+                var window = new Window { Title = Shell.Active.Name + " — Tessera", Width = model.Width, Height = model.Height,
+                    MinWidth=360, MinHeight=240, Background=ThemeManager.Brush("Surface"), Content=content };
+                _floating[id]=window; _floatingHosts[id]=host;
+                window.AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
+                window.Closing += (_, e) =>
+                {
+                    if(_reconcilingWindows || _closed) { host.DetachAll(); return; }
+                    e.Cancel = true;
+                    if(Shell.Active.Id == workspaceId) Shell.Apply(Layout.ReturnWindow(Shell.Active, id));
+                };
+                window.SizeChanged += (_, _) =>
+                {
+                    if(_reconcilingWindows || _closed || Shell.Active.Id != workspaceId) return;
+                    var item = Shell.Active.Floating.FirstOrDefault(f => f.Id == id); if(item is null) return;
+                    var width = Math.Clamp(window.Width,360,16384); var height = Math.Clamp(window.Height,240,16384);
+                    Shell.Apply(Shell.Active with { Floating = Shell.Active.Floating.Select(f => f.Id == id ? f with { Width=width,Height=height } : f).ToArray() },false,false);
+                };
+                window.Show(this);
+            }
+        }
+        finally { _reconcilingWindows = false; }
     }
     public void CloseForTests(){_closing=true;Close();}
 }

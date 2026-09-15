@@ -24,29 +24,36 @@ public sealed class DockHost : Grid
     private Guid? _dragDocument;
     private Point _dragOrigin;
     private bool _dragging;
-    private IPointer? _capturedPointer;
+    private PointerPressedEventArgs? _dragTrigger;
+    private readonly Guid? _windowId;
     private Guid? _targetGroup;
     private DockEdge _targetEdge;
-    public DockHost(MainWindow window, ShellController shell)
+    private int _targetIndex = int.MaxValue;
+    private readonly Dictionary<Guid,List<(Guid Document,Control Tab)>> _tabBounds = [];
+    public DockHost(MainWindow window, ShellController shell, Guid? windowId = null)
     {
-        _window = window; _shell = shell; ClipToBounds = true;
+        _window = window; _shell = shell; _windowId = windowId; ClipToBounds = true;
+        DragDrop.SetAllowDrop(this, true);
+        DragDrop.AddDragOverHandler(this, NativeDragOver);
+        DragDrop.AddDragLeaveHandler(this, (_, _) => ClearDropHint());
+        DragDrop.AddDropHandler(this, NativeDrop);
         AddHandler(PointerMovedEvent, DragMove, RoutingStrategies.Tunnel);
         AddHandler(PointerReleasedEvent, DragRelease, RoutingStrategies.Tunnel);
-        PointerCaptureLost += (_, _) => CancelDrag();
+
     }
     public void Rebuild()
     {
-        if(_dragging) return;
+        if(_window.DockDragActive) return;
         // Explicit detach makes reparenting legal and preserves terminal/transport identity.
         foreach(var host in _terminalHosts) host.Content = null;
-        _terminalHosts.Clear(); _groups.Clear(); _footers.Clear(); _splitGrids.Clear(); Children.Clear();
-        DockNode root = _shell.Active.Root;
+        _terminalHosts.Clear(); _groups.Clear(); _footers.Clear(); _splitGrids.Clear(); _tabBounds.Clear(); Children.Clear();
+        DockNode root = Layout.WindowRoot(_shell.Active, _windowId);
         if(_shell.FocusMode && _shell.ActiveDocumentId is {} id)
         {
             var group = Layout.Groups(root).FirstOrDefault(g => g.Tabs.Contains(id)); if(group is not null) root = group;
         }
         Children.Add(BuildNode(root));
-        Dispatcher.UIThread.Post(() => { if(_shell.ActiveSession is {} session && !_window.IsOverlayOpen) session.Terminal.Focus(); }, DispatcherPriority.Loaded);
+        Dispatcher.UIThread.Post(() => { if(_shell.ActiveSession is {} session && !_window.IsOverlayOpen && _terminalHosts.Any(h => ReferenceEquals(h.Content, session.Terminal))) session.Terminal.Focus(); }, DispatcherPriority.Loaded);
     }
     private Control BuildNode(DockNode node)
     {
@@ -82,16 +89,18 @@ public sealed class DockHost : Grid
         _groups[group.Id] = outer; AutomationProperties.SetName(outer, "Terminal tab group");
         var grid = new Grid { RowDefinitions = new RowDefinitions("35,28,*,24") }; outer.Child = grid;
         var tabs = new StackPanel { Orientation = Orientation.Horizontal };
+        var tabBounds = new List<(Guid Document,Control Tab)>(); _tabBounds[group.Id] = tabBounds;
         foreach(var id in group.Tabs)
         {
             var doc = _shell.Active.Documents[id];
             var b = Ui.Button((doc.Pinned ? "• " : "") + doc.Title, "terminal", () => { if(!_dragging) _shell.Select(id); }, "tab");
             if(group.Active == id) b.Classes.Add("activeTab");
             ToolTip.SetTip(b, doc.Title + " · drag to a pane edge or center");
-            b.PointerPressed += (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragOrigin = e.GetPosition(this); } };
+            // Buttons consume pointer presses; observe the tunnel before their class handler.
+            b.AddHandler(PointerPressedEvent, (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragTrigger = e; _dragOrigin = e.GetPosition(this); } }, RoutingStrategies.Tunnel, handledEventsToo: true);
             b.ContextMenu = _window.TabContextMenu(id);
             var tab = Ui.Row("Auto,Auto", b, Ui.IconButton("close", "Close " + doc.Title, () => _window.Run(() => _window.CloseTabAsync(id))));
-            tabs.Children.Add(tab);
+            tabs.Children.Add(tab); tabBounds.Add((id,tab));
         }
         var header = Ui.Row("*,Auto", new ScrollViewer { Content = tabs, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled }, Ui.IconButton("add", "New terminal in this group", () => _window.Run(async () => { await _shell.NewTerminalAsync(target: group.Id); })));
         header.Background = ThemeManager.Brush("Surface"); grid.Children.Add(header);
@@ -107,13 +116,6 @@ public sealed class DockHost : Grid
         var location = transport == "ssh" ? session.Profile.Transport.Ssh.Username + "@" + session.Profile.Transport.Ssh.Host : transport == "serial" ? session.Profile.Transport.Serial.PortName : session.Profile.Transport.Pty.WorkingDirectory ?? "~";
         var info = Ui.Row("*,Auto", Ui.Text("  " + (session.IsProduction ? "PRODUCTION  ·  " : "") + transport.ToUpperInvariant() + "  /  " + location, 9, session.IsProduction ? "Warning" : "Faint"), Ui.IconButton("more", "Session actions", () => _window.ShowSessionMenu(active)));
         info.Margin = new Thickness(8, 0); Grid.SetRow(info, 1); grid.Children.Add(info);
-        if(_window.IsFloating(active))
-        {
-            var placeholder = Ui.Stack(Ui.Text("This terminal is in its own window.", 16), Ui.Button("Return to workspace", "layout", () => _window.ReturnFloating(active)));
-            placeholder.HorizontalAlignment = HorizontalAlignment.Center;
-            placeholder.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetRow(placeholder, 2); grid.Children.Add(placeholder); return outer;
-        }
         var host = new ScrollViewer { Content = session.Terminal, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Background = ThemeManager.Brush("TerminalBg") };
         _terminalHosts.Add(host); Grid.SetRow(host, 2); grid.Children.Add(host);
         host.AddHandler(PointerPressedEvent, (_, _) => { if(_shell.ActiveDocumentId != active) _shell.Select(active); }, RoutingStrategies.Tunnel);
@@ -132,41 +134,95 @@ public sealed class DockHost : Grid
             text.Foreground = ThemeManager.Brush(session.Locked ? "Warning" : "Faint");
         }
     }
-    private void DragMove(object? sender, PointerEventArgs e)
+    private async void DragMove(object? sender, PointerEventArgs e)
     {
-        if(_dragDocument is null) return; var point = e.GetPosition(this);
-        if(!_dragging && Math.Sqrt(Math.Pow(point.X - _dragOrigin.X, 2) + Math.Pow(point.Y - _dragOrigin.Y, 2)) < 7) return;
-        _dragging = true; _capturedPointer = e.Pointer; e.Pointer.Capture(this); e.Handled = true; _targetGroup = null;
-        foreach(var (id, border) in _groups)
+        if (_dragDocument is not {} document || _dragTrigger is not {} trigger || _dragging) return;
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) { CancelDrag(); return; }
+        var p = e.GetPosition(this);
+        if (Math.Sqrt(Math.Pow(p.X - _dragOrigin.X, 2) + Math.Pow(p.Y - _dragOrigin.Y, 2)) < 7) return;
+        _dragging = true; _window.DockDragActive = true; e.Handled = true;
+        string? token = null;
+        try
         {
-            border.BorderThickness = new Thickness(0, 2, 0, 0);
-            border.BorderBrush = ThemeManager.Brush("Line");
-            var relative = e.GetPosition(border); var size = border.Bounds.Size;
-            if(relative.X < 0 || relative.Y < 0 || relative.X > size.Width || relative.Y > size.Height) continue;
-            _targetGroup = id;
-            _targetEdge = relative.X < size.Width * .23 ? DockEdge.Left : relative.X > size.Width * .77 ? DockEdge.Right : relative.Y < size.Height * .23 ? DockEdge.Top : relative.Y > size.Height * .77 ? DockEdge.Bottom : DockEdge.Center;
+            token = DockDragBroker.Begin(_shell, document);
+            var data = new DataTransfer(); data.Add(DataTransferItem.Create(DockDragBroker.Format, token));
+            await DragDrop.DoDragDropAsync(trigger, data, DragDropEffects.Move);
+        }
+        catch (Exception ex) { _shell.Report("Docking cancelled: " + ex.Message); }
+        finally
+        {
+            if (token is not null) DockDragBroker.End(token);
+            _window.DockDragActive = false; CancelDrag(); _window.RefreshDockWindows();
+        }
+    }
+    private void NativeDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = DragDropEffects.None; ClearDropHint();
+        if (!DockDragBroker.TryResolve(e.DataTransfer.TryGetValue(DockDragBroker.Format), _shell, out var draggedDocument)) return;
+        foreach (var (id, border) in _groups)
+        {
+            var p = e.GetPosition(border); var size = border.Bounds.Size;
+            if (!new Rect(size).Contains(p)) continue;
+            _targetGroup = id; _targetIndex = int.MaxValue;
+            if (p.Y < 36 && _tabBounds.TryGetValue(id,out var tabs))
+            {
+                _targetIndex = 0;
+                foreach (var item in tabs)
+                {
+                    if (item.Document == draggedDocument) continue;
+                    if (e.GetPosition(item.Tab).X < item.Tab.Bounds.Width / 2) break;
+                    _targetIndex++;
+                }
+                _targetEdge = DockEdge.Center;
+            }
+            else _targetEdge = p.X < size.Width * .23 ? DockEdge.Left : p.X > size.Width * .77 ? DockEdge.Right :
+                p.Y < size.Height * .23 ? DockEdge.Top : p.Y > size.Height * .77 ? DockEdge.Bottom : DockEdge.Center;
             border.BorderBrush = ThemeManager.Brush("Accent");
             border.BorderThickness = _targetEdge switch { DockEdge.Left => new(6,0,0,0), DockEdge.Right => new(0,0,6,0), DockEdge.Top => new(0,6,0,0), DockEdge.Bottom => new(0,0,0,6), _ => new(3) };
+            e.DragEffects = DragDropEffects.Move; e.Handled = true; return;
         }
-        _window.SetTransientStatus(_targetGroup is not null ? "Dock " + _targetEdge.ToString().ToLowerInvariant() + " · release to move this session" : "Drag over a pane to dock · Escape cancels");
     }
-    private void DragRelease(object? sender, PointerReleasedEventArgs e)
+    private void NativeDrop(object? sender, DragEventArgs e)
     {
-        if(!_dragging) { _dragDocument = null; return; }
-        var document = _dragDocument; var target = _targetGroup; var edge = _targetEdge;
-        CancelDrag(); e.Handled = true;
-        if(document is {} id && target is {} group) _window.Run(() => { _shell.Move(id, group, edge); return Task.CompletedTask; });
-        else Rebuild();
+        NativeDragOver(sender, e);
+        var group = _targetGroup; var edge = _targetEdge; var index = _targetIndex; ClearDropHint();
+        e.DragEffects = group is {} id && DockDragBroker.Drop(e.DataTransfer.TryGetValue(DockDragBroker.Format), _shell, id, edge, index)
+            ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
     }
-    public void CancelDrag()
+    private void DragRelease(object? sender, PointerReleasedEventArgs e) { if (!_dragging) CancelDrag(); }
+    private void ClearDropHint()
     {
-        _dragging = false; _dragDocument = null; _targetGroup = null; var pointer = _capturedPointer; _capturedPointer = null; pointer?.Capture(null);
-        foreach(var border in _groups.Values) { border.BorderThickness = new Thickness(0,2,0,0); border.BorderBrush = ThemeManager.Brush("Line"); }
+        _targetGroup = null;
+        foreach (var (id, border) in _groups)
+        {
+            border.BorderThickness = new Thickness(0,2,0,0);
+            border.BorderBrush = ThemeManager.Brush(id == _shell.ActiveGroupId ? "Accent" : "Line");
+        }
     }
+    public void CancelDrag() { _dragging = false; _dragDocument = null; _dragTrigger = null; ClearDropHint(); }
     public void FocusNext(int delta)
     {
-        var groups = Layout.Groups(_shell.Active.Root).ToArray(); var index = Array.FindIndex(groups, g => g.Id == _shell.ActiveGroupId); var next = groups[(index + delta + groups.Length) % groups.Length];
+        var groups = Layout.Groups(_shell.Active).ToArray(); var index = Array.FindIndex(groups, g => g.Id == _shell.ActiveGroupId); var next = groups[(index + delta + groups.Length) % groups.Length];
         if(next.Active is {} id) _shell.Select(id);
+    }
+    public bool FocusDirection(DockEdge direction)
+    {
+        if (!_groups.TryGetValue(_shell.ActiveGroupId,out var source)) return false;
+        var origin=source.TranslatePoint(default,this) ?? default;
+        var center=origin+new Vector(source.Bounds.Width/2,source.Bounds.Height/2);
+        var candidate=_groups.Where(p=>p.Key!=_shell.ActiveGroupId).Select(p=>
+        {
+            var point=p.Value.TranslatePoint(default,this) ?? default;
+            var other=point+new Vector(p.Value.Bounds.Width/2,p.Value.Bounds.Height/2);
+            double dx=other.X-center.X,dy=other.Y-center.Y;
+            double forward=direction switch {DockEdge.Left=>-dx,DockEdge.Right=>dx,DockEdge.Top=>-dy,_=>dy};
+            double perpendicular=direction is DockEdge.Left or DockEdge.Right?Math.Abs(dy):Math.Abs(dx);
+            return (p.Key,Forward:forward,Score:forward+perpendicular*2);
+        }).Where(p=>p.Forward>1).OrderBy(p=>p.Score).ThenBy(p=>p.Key).FirstOrDefault();
+        if(candidate.Key==Guid.Empty)return false;
+        if(Layout.Groups(_shell.Active).Single(g=>g.Id==candidate.Key).Active is {} id)_shell.Select(id);
+        return true;
     }
     public void ResizeActive(SplitAxis axis, double delta)
     {
@@ -176,7 +232,8 @@ public sealed class DockHost : Grid
             bool Inside(DockNode child) => Layout.Groups(child).Any(g => g.Id == _shell.ActiveGroupId);
             return (Inside(split.First) ? Find(split.First) : Find(split.Second)) ?? (split.Axis == axis ? split : null);
         }
-        var split = Find(_shell.Active.Root); if(split is null) return; var first = Layout.Groups(split.First).Any(g => g.Id == _shell.ActiveGroupId); _shell.Apply(Layout.Resize(_shell.Active, split.Id, split.Ratio + (first ? delta : -delta)), false);
+        var activeRoot = _shell.Active.Floating.FirstOrDefault(f => Layout.Groups(f.Root).Any(g => g.Id == _shell.ActiveGroupId))?.Root ?? _shell.Active.Root;
+        var split = Find(activeRoot); if(split is null) return; var first = Layout.Groups(split.First).Any(g => g.Id == _shell.ActiveGroupId); _shell.Apply(Layout.Resize(_shell.Active, split.Id, split.Ratio + (first ? delta : -delta)), false);
     }
     public void DetachAll() { foreach(var host in _terminalHosts) host.Content = null; _terminalHosts.Clear(); }
 }

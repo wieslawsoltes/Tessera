@@ -7,6 +7,7 @@ using RoyalTerminal.Avalonia.Rendering;
 using RoyalTerminal.Shaders;
 using RoyalTerminal.Terminal;
 using Tessera.Services;
+using Tessera.Core;
 
 namespace Tessera.Views;
 
@@ -28,10 +29,11 @@ public sealed partial class MainWindow
     {
         var session = Shell.ActiveSession;
         if(session is null) { ShowError("Open a terminal before configuring its shader pipeline."); return; }
-        var presets = new ComboBox { ItemsSource = new[] { "None", "Sage tint", "Subtle scanlines", "Custom" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var language = new ComboBox { ItemsSource = Enum.GetValues<TerminalShaderLanguage>(), SelectedItem = TerminalShaderLanguage.SkiaRuntimeEffect, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var editor = new TextBox { Text = TintShader, AcceptsReturn = true, AcceptsTab = true, MaxLength = 262144, FontFamily = new FontFamily("monospace"), Height = 245, TextWrapping = TextWrapping.NoWrap };
-        var animate = new CheckBox { Content = "Shader needs continuous animation", IsChecked = false };
+        var saved = Shell.Shaders.Get(session.Id);
+        var presets = new ComboBox { ItemsSource = new[] { "None", "Sage tint", "Subtle scanlines", "Custom" }, SelectedIndex = saved.Length>0?3:0, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var language = new ComboBox { ItemsSource = Enum.GetValues<TerminalShaderLanguage>(), SelectedItem = saved.Length>0?Enum.Parse<TerminalShaderLanguage>(saved[0].Language):TerminalShaderLanguage.SkiaRuntimeEffect, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var editor = new TextBox { Text = saved.FirstOrDefault()?.Source??TintShader, AcceptsReturn = true, AcceptsTab = true, MaxLength = 262144, FontFamily = new FontFamily("monospace"), Height = 245, TextWrapping = TextWrapping.NoWrap };
+        var animate = new CheckBox { Content = "Shader needs continuous animation", IsChecked = saved.FirstOrDefault()?.Animated??false };
         var diagnostics = Ui.Text("No shader will be applied until validation succeeds.", 11, "Muted");
         diagnostics.TextWrapping = TextWrapping.Wrap;
         presets.SelectionChanged += (_, _) =>
@@ -48,21 +50,23 @@ public sealed partial class MainWindow
             if(new FileInfo(path).Length > 262144) throw new InvalidOperationException("Shader source is limited to 256 KiB.");
             editor.Text = await File.ReadAllTextAsync(path); presets.SelectedIndex = 3;
         })));
-        actions.Children.Add(Ui.Button("Validate & apply", "check", () => Run(() =>
+        actions.Children.Add(Ui.Button("Validate & apply", "check", () => Run(async () =>
         {
-            if(presets.SelectedIndex == 0) { session.Terminal.ShaderSources = []; diagnostics.Text = "Shader pipeline disabled."; return Task.CompletedTask; }
+            if(presets.SelectedIndex == 0) { session.Terminal.ShaderSources = []; Shell.Shaders.Set(session.Id,[]);if(!Shell.DesignMode)await Shell.Shaders.SaveAsync();diagnostics.Text = "Shader pipeline disabled and saved."; return; }
             if(string.IsNullOrWhiteSpace(editor.Text)) throw new InvalidOperationException("Enter shader source first.");
             TerminalShaderSource[] sources = [new("Tessera custom shader", editor.Text, (TerminalShaderLanguage)language.SelectedItem!, requiresContinuousAnimation: animate.IsChecked == true)];
             using(var processor = TerminalShaderPostProcessor.Create(sources))
             {
-                if(!string.IsNullOrWhiteSpace(processor.CompileLog)) { diagnostics.Text = processor.CompileLog; diagnostics.Foreground = ThemeManager.Brush("Danger"); return Task.CompletedTask; }
+                if(!string.IsNullOrWhiteSpace(processor.CompileLog)) { diagnostics.Text = processor.CompileLog; diagnostics.Foreground = ThemeManager.Brush("Danger"); return; }
             }
+            Shell.Shaders.Set(session.Id,[new ShaderDefinition("Tessera custom shader",editor.Text,language.SelectedItem!.ToString()!,animate.IsChecked==true)]);
+            if(!Shell.DesignMode)await Shell.Shaders.SaveAsync();
             session.Terminal.ShaderSources = sources;
             session.Terminal.ShaderAnimationEnabled = !Shell.Data.Preferences.ReducedMotion;
             session.Terminal.InvalidateTerminal();
-            diagnostics.Text = "Compiled and applied to the active terminal. Reduced motion disables continuous animation.";
+            diagnostics.Text = "Compiled, saved, and applied. The pipeline is restored with this session slot; reduced motion suppresses continuous animation.";
             diagnostics.Foreground = ThemeManager.Brush("Accent");
-            return Task.CompletedTask;
+            return;
         }), "primary"));
         ShowOverlay("A little atmosphere. Still a terminal.", "A real RoyalTerminal framebuffer shader pipeline. Effects are opt-in, per-session, and do not modify terminal bytes.",
             Ui.Stack(Ui.Row("*,16,*", Ui.Field("Preset", presets), new Border(), Ui.Field("Source language", language)), editor, animate, diagnostics, actions), 820);

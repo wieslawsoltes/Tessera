@@ -14,12 +14,25 @@ public sealed record DockSplit(Guid Id, SplitAxis Axis, double Ratio, DockNode F
 public sealed record TerminalDocument(Guid Id, string ProfileId, string Title, bool Pinned = false, bool IsReplay = false);
 public sealed record Workspace(Guid Id, string Name, string Description, DockNode Root, Dictionary<Guid, TerminalDocument> Documents, string Notes = "")
 {
+    public FloatingDock[] Floating { get; init; } = [];
     public static Workspace Empty(string name) => new(Guid.NewGuid(), name, "Your sessions. Your way of working.", new TabGroup(Guid.NewGuid(), [], null), []);
 }
-public sealed record SavedLayout(Guid Id, string Name, DockNode Root, Dictionary<Guid, TerminalDocument> Documents);
+public sealed record FloatingDock(Guid Id, DockNode Root, double Width = 900, double Height = 580);
+public sealed record SavedLayout(Guid Id, string Name, DockNode Root, Dictionary<Guid, TerminalDocument> Documents)
+{
+    public FloatingDock[] Floating { get; init; } = [];
+}
 public sealed record Snippet(Guid Id, string Name, string Command, string Category);
 public sealed record HistoryEntry(DateTimeOffset Time, string Command, string ProfileId, string Directory);
-public sealed record AppPreferences(string Theme = "Obsidian", double FontSize = 13, string FontFamily = "", bool Compact = false, bool ConfirmClose = true, bool RestoreLocalSessions = true, bool ReducedMotion = false, double ToolSize = 184, bool ToolsOnRight = false, string Tool = "Commands");
+public sealed record AppPreferences(string Theme = "Obsidian", double FontSize = 13, string FontFamily = "", bool Compact = false, bool ConfirmClose = true, bool RestoreLocalSessions = true, bool ReducedMotion = false, double ToolSize = 184, bool ToolsOnRight = false, string Tool = "Commands")
+{
+    public bool OverrideProfileFont { get; init; }
+    public string CursorStyle { get; init; } = "Block";
+    public bool CursorBlink { get; init; } = true;
+    public double LineHeight { get; init; } = 1.0;
+    public bool PersistHistory { get; init; }
+    public int HistoryRetentionDays { get; init; } = 90;
+}
 public sealed record AppDocument(int Version, Guid ActiveWorkspace, Workspace[] Workspaces, SavedLayout[] Layouts, Snippet[] Snippets, AppPreferences Preferences, Dictionary<string, string> Bindings);
 
 /// <summary>Pure layout algebra. Visuals and live sessions never enter this model.</summary>
@@ -38,18 +51,38 @@ public static class Layout
         _ => node
     };
 
+    public static IEnumerable<TabGroup> Groups(Workspace workspace) =>
+        Groups(workspace.Root).Concat(workspace.Floating.SelectMany(f => Groups(f.Root)));
+
+    public static DockNode WindowRoot(Workspace workspace, Guid? windowId) => windowId is {} id
+        ? workspace.Floating.Single(f => f.Id == id).Root : workspace.Root;
+
+    private static Workspace MapRoots(Workspace workspace, Func<DockNode, DockNode> map) => workspace with
+    {
+        Root = map(workspace.Root),
+        Floating = workspace.Floating.Select(f => f with { Root = map(f.Root) }).ToArray()
+    };
+
+    private static Workspace Normalize(Workspace workspace) => workspace with
+    {
+        Root = Prune(workspace.Root) ?? new TabGroup(workspace.Root is TabGroup g ? g.Id : Guid.NewGuid(), [], null),
+        Floating = workspace.Floating.Select(f => (Window: f, Root: Prune(f.Root)))
+            .Where(x => x.Root is not null).Select(x => x.Window with { Root = x.Root! }).ToArray()
+    };
+
     public static Workspace Add(Workspace workspace, Guid groupId, TerminalDocument document)
     {
         if (workspace.Documents.ContainsKey(document.Id)) throw new InvalidOperationException("Document already exists.");
-        var group = Groups(workspace.Root).Single(g => g.Id == groupId);
+        var group = Groups(workspace).Single(g => g.Id == groupId);
         var docs = new Dictionary<Guid, TerminalDocument>(workspace.Documents) { [document.Id] = document };
-        return Checked(workspace with { Documents = docs, Root = Replace(workspace.Root, groupId, _ => group with { Tabs = [.. group.Tabs, document.Id], Active = document.Id }) });
+        return Checked(MapRoots(workspace with { Documents = docs }, root => Replace(root, groupId,
+            _ => group with { Tabs = [.. group.Tabs, document.Id], Active = document.Id })));
     }
 
     public static Workspace Activate(Workspace workspace, Guid id)
     {
-        var group = Groups(workspace.Root).Single(g => g.Tabs.Contains(id));
-        return Checked(workspace with { Root = Replace(workspace.Root, group.Id, _ => group with { Active = id }) });
+        var group = Groups(workspace).Single(g => g.Tabs.Contains(id));
+        return Checked(MapRoots(workspace, root => Replace(root, group.Id, _ => group with { Active = id })));
     }
 
     public static Workspace Update(Workspace workspace, TerminalDocument document)
@@ -64,20 +97,20 @@ public static class Layout
         if (!workspace.Documents.ContainsKey(documentId)) return workspace;
         var docs = new Dictionary<Guid, TerminalDocument>(workspace.Documents);
         docs.Remove(documentId);
-        return Checked(workspace with { Documents = docs, Root = Prune(RemoveTab(workspace.Root, documentId)) ?? new TabGroup(Guid.NewGuid(), [], null) });
+        return Checked(Normalize(MapRoots(workspace with { Documents = docs }, root => RemoveTab(root, documentId))));
     }
 
     public static Workspace Move(Workspace workspace, Guid documentId, Guid targetGroup, DockEdge edge, int index = int.MaxValue)
     {
+        if (!Enum.IsDefined(edge)) throw new ArgumentOutOfRangeException(nameof(edge));
         if (!workspace.Documents.ContainsKey(documentId)) throw new KeyNotFoundException("Unknown document.");
-        var target = Groups(workspace.Root).Single(g => g.Id == targetGroup);
-        // A sole tab cannot be split against itself. This is a no-op, not a lost session.
+        var target = Groups(workspace).Single(g => g.Id == targetGroup);
         if (target.Tabs.Length == 1 && target.Tabs[0] == documentId && edge != DockEdge.Center) return workspace;
-        var root = RemoveTab(workspace.Root, documentId);
-        root = Replace(root, targetGroup, n =>
+        var removed = MapRoots(workspace, root => RemoveTab(root, documentId));
+        return Checked(Normalize(MapRoots(removed, root => Replace(root, targetGroup, n =>
         {
             var group = (TabGroup)n;
-            if (edge == DockEdge.Center)
+            if (edge == DockEdge.Center || group.Tabs.Length == 0)
             {
                 var tabs = group.Tabs.ToList();
                 tabs.Insert(Math.Clamp(index, 0, tabs.Count), documentId);
@@ -85,15 +118,34 @@ public static class Layout
             }
             var added = new TabGroup(Guid.NewGuid(), [documentId], documentId);
             var first = edge is DockEdge.Left or DockEdge.Top;
-            return new DockSplit(Guid.NewGuid(), edge is DockEdge.Left or DockEdge.Right ? SplitAxis.Columns : SplitAxis.Rows, .5, first ? added : group, first ? group : added);
-        });
-        return Checked(workspace with { Root = Prune(root)! });
+            return new DockSplit(Guid.NewGuid(), edge is DockEdge.Left or DockEdge.Right ? SplitAxis.Columns : SplitAxis.Rows,
+                .5, first ? added : group, first ? group : added);
+        }))));
+    }
+
+    public static Workspace Float(Workspace workspace, Guid documentId)
+    {
+        if (!workspace.Documents.ContainsKey(documentId)) throw new KeyNotFoundException("Unknown document.");
+        if (workspace.Floating.Length >= 32) throw new InvalidOperationException("The floating-window limit is 32.");
+        var removed = Normalize(MapRoots(workspace, root => RemoveTab(root, documentId)));
+        return Checked(removed with { Floating = [.. removed.Floating,
+            new FloatingDock(Guid.NewGuid(), new TabGroup(Guid.NewGuid(), [documentId], documentId))] });
+    }
+
+    public static Workspace ReturnWindow(Workspace workspace, Guid windowId)
+    {
+        var window = workspace.Floating.Single(f => f.Id == windowId);
+        var target = Groups(workspace.Root).First().Id;
+        foreach (var id in Groups(window.Root).SelectMany(g => g.Tabs).ToArray())
+            workspace = Move(workspace, id, target, DockEdge.Center);
+        return Checked(workspace);
     }
 
     public static Workspace Resize(Workspace workspace, Guid splitId, double ratio)
     {
         if (!double.IsFinite(ratio)) throw new ArgumentOutOfRangeException(nameof(ratio));
-        return Checked(workspace with { Root = Replace(workspace.Root, splitId, n => ((DockSplit)n) with { Ratio = Math.Clamp(ratio, .1, .9) }) });
+        return Checked(MapRoots(workspace, root => Replace(root, splitId,
+            n => ((DockSplit)n) with { Ratio = Math.Clamp(ratio, .1, .9) })));
     }
 
     public static Workspace Arrange(Workspace workspace, string preset)
@@ -120,7 +172,6 @@ public static class Layout
 
     public static Workspace RestoreLayout(Workspace workspace, SavedLayout saved)
     {
-        // A saved arrangement describes new slots, not revived processes. Fresh IDs avoid aliasing a live session.
         var map = saved.Documents.Keys.ToDictionary(id => id, _ => Guid.NewGuid());
         DockNode Clone(DockNode n) => n switch
         {
@@ -128,7 +179,9 @@ public static class Layout
             DockSplit s => new DockSplit(Guid.NewGuid(), s.Axis, s.Ratio, Clone(s.First), Clone(s.Second)),
             _ => throw new InvalidDataException()
         };
-        return Checked(workspace with { Root = Clone(saved.Root), Documents = saved.Documents.Values.ToDictionary(d => map[d.Id], d => d with { Id = map[d.Id] }) });
+        return Checked(workspace with { Root = Clone(saved.Root),
+            Floating = saved.Floating.Select(f => f with { Id = Guid.NewGuid(), Root = Clone(f.Root) }).ToArray(),
+            Documents = saved.Documents.Values.ToDictionary(d => map[d.Id], d => d with { Id = map[d.Id] }) });
     }
 
     private static DockNode RemoveTab(DockNode node, Guid id) => node switch
@@ -155,6 +208,14 @@ public static class Layout
         var nodes = new HashSet<Guid>();
         var documents = new HashSet<Guid>();
         Visit(workspace.Root, 0);
+        if (workspace.Floating is null || workspace.Floating.Length > 32) throw new InvalidDataException("Invalid floating windows.");
+        foreach (var window in workspace.Floating)
+        {
+            if (window.Id == Guid.Empty || !nodes.Add(window.Id) || !double.IsFinite(window.Width) ||
+                !double.IsFinite(window.Height) || window.Width is < 320 or > 16384 || window.Height is < 200 or > 16384 ||
+                !Groups(window.Root).SelectMany(g => g.Tabs).Any()) throw new InvalidDataException("Invalid floating window.");
+            Visit(window.Root, 0);
+        }
         if (!documents.SetEquals(workspace.Documents.Keys)) throw new InvalidDataException("Unattached document.");
         foreach (var (id, d) in workspace.Documents)
             if (id == Guid.Empty || id != d.Id || string.IsNullOrWhiteSpace(d.ProfileId) || string.IsNullOrWhiteSpace(d.Title) || d.Title.Length > 256) throw new InvalidDataException("Invalid terminal document.");
