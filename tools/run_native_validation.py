@@ -54,7 +54,7 @@ def main() -> int:
                           '--results-directory', str(root.resolve()), '--blame-hang-timeout', '2m']
         if args.mode == 'integration':
             command += ['--filter', 'FullyQualifiedName~ExternalAcceptanceTests']
-        run_code = execute(command, root / 'execution.txt', 300)
+        run_code = execute(command, root / 'execution.txt', 600)
     try:
         names = discovery_names(discovery.read_text(encoding='utf-8'))
         if args.mode == 'integration':

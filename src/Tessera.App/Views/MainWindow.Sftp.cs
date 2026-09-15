@@ -143,10 +143,10 @@ public sealed partial class MainWindow
     private async Task UploadSftpAsync(CancellationToken token)
     {
         var connection=RequireSftp();if(connection.ReadOnly)throw new InvalidOperationException("Enable SFTP writes first.");
-        var files=await _sftpWindow!.StorageProvider.OpenFilePickerAsync(new(){Title="Upload local files",AllowMultiple=true});
-        foreach(var file in files)
+        var files=await _fileDialogs.OpenFilesAsync(_sftpWindow!, new(){Title="Upload local files",AllowMultiple=true});
+        foreach(var path in files)
         {
-            token.ThrowIfCancellationRequested();if(file.TryGetLocalPath() is not {} path)continue;
+            token.ThrowIfCancellationRequested();
             var destination=SftpWorkspace.ChildPath(_remoteDirectory,Path.GetFileName(path));
             var existing=(await connection.ListAsync(_remoteDirectory,token)).FirstOrDefault(f=>f.Path==destination);
             bool overwrite=existing is not null;
@@ -158,8 +158,8 @@ public sealed partial class MainWindow
     private async Task DownloadSftpAsync(CancellationToken token)
     {
         var connection=RequireSftp();var selected=SelectedSftpFile();if(selected.Directory||selected.SymbolicLink)throw new InvalidOperationException("Choose a regular file for download.");
-        var file=await _sftpWindow!.StorageProvider.SaveFilePickerAsync(new(){Title="Download remote file",SuggestedFileName=selected.Name});
-        if(file?.TryGetLocalPath() is not {} path)return;
+        var path=await _fileDialogs.SaveFileAsync(_sftpWindow!, new(){Title="Download remote file",SuggestedFileName=selected.Name});
+        if(path is null)return;
         if(File.Exists(path)&&!await ConfirmSftpAsync("Replace local file?",path,"Replace file",token))return;
         await connection.DownloadAsync(selected.Path,path,File.Exists(path),SftpProgress(),token);_sftpStatus!.Text="Download completed · "+path;
     }

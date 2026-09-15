@@ -15,9 +15,13 @@ namespace Tessera.Views;
 public sealed partial class MainWindow : Window
 {
     private readonly DockHost _dock;
+    private readonly IWorkspaceFileDialogs _fileDialogs;
     private readonly CommandRegistry _commands = new();
+    private readonly WindowMenuBinding _menuBinding;
+    private readonly Dictionary<Guid, WindowMenuBinding> _floatingMenus = [];
     private bool _renderQueued;
     private bool _closing;
+    private bool _closeRequested;
     private bool _closed;
     private bool _initializing;
     private Task? _initialization;
@@ -28,14 +32,20 @@ public sealed partial class MainWindow : Window
     public bool IsOverlayOpen => Q<Border>("OverlayShade").IsVisible;
     private T Q<T>(string name) where T : Control => this.FindControl<T>(name)!;
     public MainWindow() : this(false) { }
-    public MainWindow(bool designMode, string? directory = null)
+    public MainWindow(bool designMode, string? directory = null, IWorkspaceFileDialogs? fileDialogs = null)
     {
+        _fileDialogs = fileDialogs ?? new NativeWorkspaceFileDialogs();
         AvaloniaXamlLoader.Load(this);
+        // The main window already coordinates confirmation, SFTP edits, captures
+        // and session disposal. Child floating windows otherwise veto owner-close
+        // to implement their standalone "return tabs" action before this handler runs.
+        ClosingBehavior = WindowClosingBehavior.OwnerWindowOnly;
         Shell = new ShellController(designMode, directory);
         _dock = new DockHost(this, Shell); Q<ContentControl>("DockSurface").Content = _dock;
         ConfigureCommands();
         RegisterAdvancedCommands();
         RegisterAcceptanceCommands();
+        _menuBinding = new WindowMenuBinding(this, _commands, Q<Menu>("MainMenu"));
         Shell.SessionCreated += ConfigureSession;
         Shell.Profiles.Saved += () =>
         {
@@ -62,14 +72,20 @@ public sealed partial class MainWindow : Window
         {
             if(_closing) return;
             e.Cancel = true;
+            if (_closeRequested) return;
+            _closeRequested = true;
             Run(async () =>
             {
-                if(!Shell.DesignMode && Shell.Data.Preferences.ConfirmClose && Shell.Sessions.All.Any(s => s.IsRunning) && !await ConfirmAsync("Close Tessera?", "Running terminal processes will be stopped. Layouts and notes will be saved.", "Close application")) return;
-                if(!await TryCloseSftpAsync())return;
-                await Shell.PrepareShutdownAsync(); _closing = true; Close();
+                try
+                {
+                    if(!Shell.DesignMode && Shell.Data.Preferences.ConfirmClose && Shell.Sessions.All.Any(s => s.IsRunning) && !await ConfirmAsync("Close Tessera?", "Running terminal processes will be stopped. Layouts and notes will be saved.", "Close application")) return;
+                    if(!await TryCloseSftpAsync())return;
+                    await Shell.PrepareShutdownAsync(); _closing = true; Close();
+                }
+                finally { _closeRequested = false; }
             });
         };
-        Closed += (_, _) => { _closed = true; _windowLifetime.Cancel(); _dock.DetachAll(); foreach(var floating in _floating.Values.ToArray()) floating.Close(); Shell.Dispose(); };
+        Closed += (_, _) => { _closed = true; DismissOverlay(); _timelineTimer?.Stop(); _menuBinding.Dispose(); _windowLifetime.Cancel(); _dock.DetachAll(); foreach(var floating in _floating.Values.ToArray()) floating.Close(); Shell.Dispose(); };
         SizeChanged += (_, _) => UpdateResponsiveLayout();
         Q<GridSplitter>("ToolsSplitter").AddHandler(PointerReleasedEvent, (_, _) =>
         {
@@ -194,21 +210,10 @@ public sealed partial class MainWindow : Window
     }
     private void BuildMenu()
     {
-        var items = new List<MenuItem>();
-        foreach(var category in new[]{"File","Edit","View","Session","Tools","Help"})
-        {
-            var menu = new MenuItem { Header = category };
-            menu.ItemsSource = _commands.All.Where(c=>c.Category==category).Select(c=>new MenuItem { Header=c.Title, Command=c, InputGesture=c.Gesture.Contains(',')||c.Gesture.Length==0?null:KeyGesture.Parse(c.Gesture) }).ToArray(); items.Add(menu);
-        }
-        Q<Menu>("MainMenu").ItemsSource = items;
-        var native = new NativeMenu();
-        foreach(var category in new[]{"File","Edit","View","Session","Tools","Help"})
-        {
-            var submenu = new NativeMenu(); foreach(var c in _commands.All.Where(c=>c.Category==category)) submenu.Items.Add(new NativeMenuItem(c.Title){Command=c});
-            native.Items.Add(new NativeMenuItem(category){Menu=submenu});
-        }
-        NativeMenu.SetMenu(this,native);
+        _menuBinding.Refresh();
+        foreach (var menu in _floatingMenus.Values) menu.Refresh();
     }
+
     private Button CommandButton(string id, bool iconOnly = false, string? style = null)
     {
         var c=_commands[id];var b=iconOnly?Ui.IconButton(c.Icon,c.Title+ (c.Gesture.Length>0?" · "+c.Gesture:""),()=>c.Execute(null)):Ui.Button(id switch { "save-layout" => "Save layout", "layouts" => "Layouts", _ => c.Title },c.Icon,()=>c.Execute(null),style);
@@ -349,6 +354,11 @@ public sealed partial class MainWindow : Window
                 var window = new Window { Title = Shell.Active.Name + " — Tessera", Width = model.Width, Height = model.Height,
                     MinWidth=360, MinHeight=240, Background=ThemeManager.Brush("Surface"), Content=content };
                 _floating[id]=window; _floatingHosts[id]=host;
+                _floatingMenus[id] = new WindowMenuBinding(window, _commands);
+                window.Closed += (_, _) =>
+                {
+                    if (_floatingMenus.Remove(id, out var menu)) menu.Dispose();
+                };
                 window.AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
                 window.Closing += (_, e) =>
                 {
