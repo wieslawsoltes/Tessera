@@ -1,0 +1,39 @@
+name: Import verified macOS menu fix
+on:
+  push:
+    branches: [fix/macos-menu-lifetime]
+    paths: [.github/workflows/import-menu-fix.yml]
+permissions:
+  contents: write
+jobs:
+  import:
+    if: github.repository == 'wieslawsoltes/Tessera' && github.ref == 'refs/heads/fix/macos-menu-lifetime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify transferred source and materialize exact reviewed patch
+        run: |
+          python3 - <<'PY'
+          import hashlib,lzma,pathlib,subprocess
+          root=pathlib.Path('eng/menu-fix-import')
+          payload=b''.join((root/f'{i}.part').read_bytes() for i in range(4))
+          assert hashlib.sha256(payload).hexdigest()=='21be1c3225b7f7d743fa4c78495ff5e6a4b1dc54dc830f9a55d0501f11d72ac8','Transferred archive mismatch'
+          patch=lzma.decompress(payload)
+          assert hashlib.sha256(patch).hexdigest()=='6fa7681152fa5d5a3b98731afb60d20f5dce9319b112cd941be1bdcb6dee9fd4','Patch mismatch'
+          path=pathlib.Path('/tmp/tessera-menu-fix.diff');path.write_bytes(patch)
+          # Workflow changes are published separately through the GitHub connector.
+          exclude='--exclude=.github/workflows/ci.yml'
+          subprocess.run(['git','apply',exclude,'--check',str(path)],check=True)
+          subprocess.run(['git','apply',exclude,'--index',str(path)],check=True)
+          subprocess.run(['git','rm','-r','eng/menu-fix-import','.github/workflows/import-menu-fix.yml'],check=True)
+          tree=subprocess.check_output(['git','write-tree'],text=True).strip()
+          assert tree=='98cd9a2be77257b49bf33c6e9b712c2b14a0f4cf',f'Source tree mismatch: {tree}'
+          print('All application, test and documentation files match local commit 1b5b8188b73bf2167933851ea8a0787eca10bd3b; CI follows in a separate connector commit.')
+          PY
+      - name: Publish recovered source commit
+        run: |
+          git diff --cached --stat
+          git -c user.name='Tessera contributors' -c user.email='tessera@users.noreply.github.com' commit -m 'fix: preserve macOS menu identity and regress complete UI workflows' -m 'Recover verified application, tests and documentation from local commit 1b5b8188b73bf2167933851ea8a0787eca10bd3b. Attach menu trees once per window, preserve keyboard chords, coordinate shutdown and fix recording import/file-save races. Add 64 headless UI cases and a production desktop-backend validation harness. Workflow wiring is committed separately.'
+          git push origin HEAD:fix/macos-menu-lifetime
+          git rev-parse HEAD
