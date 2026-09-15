@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using RoyalTerminal.Terminal;
+using Tessera.Services;
 using Xunit;
 
 namespace Tessera.NativeTests;
@@ -29,7 +30,7 @@ public sealed class PtyTransportTests
             shell = "/bin/sh";
             arguments = ["-c", "printf '%s\\n' '" + marker + "'"];
         }
-        using var pty = new DefaultPtyFactory().Create();
+        using var pty = new TesseraPtyFactory().Create();
         pty.DataReceived += (bytes, length) =>
         {
             lock (sync)
