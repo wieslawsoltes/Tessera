@@ -107,7 +107,25 @@ public sealed partial class MainWindow
         appearance.Children.Add(Ui.Row("3*,16,*",Ui.Field("Terminal font family",font),new Border(),Ui.Field("Size (DIP)",size)));
         var compact=new CheckBox{Content="Compact chrome",IsChecked=Shell.Data.Preferences.Compact};var motion=new CheckBox{Content="Reduce motion",IsChecked=Shell.Data.Preferences.ReducedMotion};var close=new CheckBox{Content="Confirm before closing running sessions",IsChecked=Shell.Data.Preferences.ConfirmClose};var restore=new CheckBox{Content="Restart local sessions when restoring a workspace",IsChecked=Shell.Data.Preferences.RestoreLocalSessions};
         appearance.Children.Add(Ui.Stack(compact,motion,close,restore));
-        appearance.Children.Add(Ui.Button("Apply appearance", "check",()=>{Shell.SetPreferences(Shell.Data.Preferences with{FontFamily=font.Text??"",FontSize=(double)(size.Value??13),Compact=compact.IsChecked==true,ReducedMotion=motion.IsChecked==true,ConfirmClose=close.IsChecked==true,RestoreLocalSessions=restore.IsChecked==true});DismissOverlay();},"primary"));
+        var overrideFont=new CheckBox {Content="Override connection profile fonts",IsChecked=Shell.Data.Preferences.OverrideProfileFont};
+        var cursor=new ComboBox {ItemsSource=new[]{"Block","Bar","Underline"},SelectedItem=Shell.Data.Preferences.CursorStyle,HorizontalAlignment=HorizontalAlignment.Stretch};
+        var blink=new CheckBox {Content="Blink cursor",IsChecked=Shell.Data.Preferences.CursorBlink};
+        var line=new NumericUpDown {Minimum=1,Maximum=2,Increment=.05m,Value=(decimal)Shell.Data.Preferences.LineHeight,FormatString="0.00×"};
+        var persist=new CheckBox {Content="Persist completed command history locally (opt-in)",IsChecked=Shell.Data.Preferences.PersistHistory};
+        var retention=new NumericUpDown {Minimum=1,Maximum=3650,Increment=1,Value=Shell.Data.Preferences.HistoryRetentionDays,FormatString="0"};
+        appearance.Children.Add(overrideFont);
+        appearance.Children.Add(Ui.Row("*,16,*",Ui.Field("Cursor shape",cursor),new Border(),Ui.Field("Line height multiplier",line)));appearance.Children.Add(blink);
+        appearance.Children.Add(persist);appearance.Children.Add(Ui.Field("History retention (days)",retention));
+        var privacy=Ui.Text("History stores only completed shell-integration commands, with conservative secret filtering. It is not encrypted and may still contain sensitive text. Turning persistence off clears Tessera history from memory and disk.",11,"Muted");privacy.TextWrapping=TextWrapping.Wrap;appearance.Children.Add(privacy);
+        appearance.Children.Add(Ui.Button("Apply appearance", "check",()=>Run(async()=>
+        {
+            if(Shell.Data.Preferences.PersistHistory&&persist.IsChecked!=true)await Shell.HistoryStore.ClearAsync();
+            Shell.SetPreferences(Shell.Data.Preferences with {FontFamily=font.Text??"",FontSize=(double)(size.Value??13),OverrideProfileFont=overrideFont.IsChecked==true,
+                CursorStyle=cursor.SelectedItem as string??"Block",CursorBlink=blink.IsChecked==true,LineHeight=(double)(line.Value??1),
+                PersistHistory=persist.IsChecked==true,HistoryRetentionDays=(int)(retention.Value??90),Compact=compact.IsChecked==true,ReducedMotion=motion.IsChecked==true,ConfirmClose=close.IsChecked==true,RestoreLocalSessions=restore.IsChecked==true});
+            if(persist.IsChecked==true&&!Shell.DesignMode)await Shell.HistoryStore.LoadAsync();
+            await Shell.FlushAsync();DismissOverlay();
+        }),"primary"));
         appearance.Children.Add(new Separator());appearance.Children.Add(Ui.Button("Edit keyboard bindings","code",ShowKeybindings));appearance.Children.Add(Ui.Button("Terminal, connection & advanced settings","settings",()=>ShowProfiles(Shell.ActiveDocument?.ProfileId)));
         ShowOverlay("Make room for your way of working.","Appearance, keyboard, and workspace behavior. Terminal-specific features remain available in connection profiles.",appearance,800);
     }
@@ -128,23 +146,37 @@ public sealed partial class MainWindow
         foreach(var pair in new[] { ("BackgroundBrush", "Surface"), ("ContentBackgroundBrush", "TerminalBg"), ("BorderBrush", "Line"), ("DividerBrush", "Line"), ("SecondaryTextBrush", "Muted"), ("SubtleTextBrush", "Faint"), ("CardBorderBrush", "Line") })
             panel.Resources["TerminalSettings.Panel." + pair.Item1] = ThemeManager.Brush(pair.Item2);
         var production=new CheckBox{Content="Production connection · input locked on every connect · never broadcast",IsChecked=state.SelectedProfile is {} item&&Shell.Profiles.Production.Contains(item.Id)};
+        var remember=new CheckBox {Content="Remember this profile's passwords in "+Shell.Profiles.Vault.Name,IsChecked=state.SelectedProfile is {} selectedItem&&Shell.Profiles.RememberCredentials.Contains(selectedItem.Id)};
+        var savedSelection=state.SelectedProfile?.Id;
+        void CaptureFlags(string? id)
+        {
+            if(id is null)return;
+            if(production.IsChecked==true)Shell.Profiles.Production.Add(id);else Shell.Profiles.Production.Remove(id);
+            if(remember.IsChecked==true)Shell.Profiles.RememberCredentials.Add(id);else Shell.Profiles.RememberCredentials.Remove(id);
+        }
         state.PropertyChanged += (_, e) =>
         {
             if(e.Property.Name == nameof(state.SelectedProfile))
-                production.IsChecked = state.SelectedProfile is {} selectedProfile && Shell.Profiles.Production.Contains(selectedProfile.Id);
+            {
+                CaptureFlags(savedSelection);savedSelection=state.SelectedProfile?.Id;
+                production.IsChecked = savedSelection is {} id&&Shell.Profiles.Production.Contains(id);
+                remember.IsChecked = savedSelection is {} key&&Shell.Profiles.RememberCredentials.Contains(key);
+            }
         };
         async Task Save()
         {
-            var id=state.SelectedProfile?.Id;if(id is not null){if(production.IsChecked==true)Shell.Profiles.Production.Add(id);else Shell.Profiles.Production.Remove(id);}
+            CaptureFlags(state.SelectedProfile?.Id);
             await Shell.Profiles.SaveAsync(state);Shell.Report("Connection profiles saved");QueueRender();
         }
         state.SaveRequested+=(_,_)=>Run(Save);
         state.ApplyRequested+=(_,_)=>Run(async()=>{await Save();if(Shell.ActiveSession is {} session&&state.SelectedProfile?.Id==session.Profile.Id){session.ApplyProfile(Shell.Profiles.Get(session.Profile.Id));Shell.Report("Profile presentation applied. Reconnect to apply transport changes.");}});
         state.BrowseFontFileRequested+=(_,_)=>Run(async()=>{var files=await StorageProvider.OpenFilePickerAsync(new(){Title="Choose terminal font file",AllowMultiple=false});if(files.FirstOrDefault()?.TryGetLocalPath() is {} path)state.LoadFontFile(path);});
-        var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=10};actions.Children.Add(production);
+        var actions=Ui.Stack(production,remember,
+            Ui.Button("Forget stored credentials","lock",()=>Run(async()=>{if(state.SelectedProfile is {} p){await Shell.Profiles.ForgetCredentialsAsync(p.Id);remember.IsChecked=false;state.SshPassword="";state.SshProxyPassword="";Shell.Report("Stored credentials removed");}})),
+            Ui.Button("Advanced profile document","code",()=>Run(async()=>{await Save();if(state.SelectedProfile is {} p)ShowAdvancedProfile(p.Id);})));
         var connect=Ui.Button("Save & connect","right",()=>Run(async()=>{await Save();var id=state.SelectedProfile?.Id;DismissOverlay();if(id is not null)await Shell.NewTerminalAsync(id);}),"primary");
         var body=Ui.Stack(Ui.Text("PTY · SSH · Pipe · Raw TCP · Telnet · Serial",11,"Muted"),panel,actions,connect);
-        ShowOverlay("Connections & terminal profiles","RoyalTerminal's complete profile editor. Passwords are runtime-only. Unknown SSH host keys are never trusted automatically.",body,900);
+        ShowOverlay("Connections & terminal profiles","Passwords are session-only unless Remember is enabled. Additional forwarding rules and private keys are preserved; edit them in the advanced document. Logging is output-only and may contain secrets.",body,900);
     }
     public void ShowBroadcast()
     {
@@ -159,15 +191,7 @@ public sealed partial class MainWindow
         body.Children.Add(Ui.Button("Arm selected sessions","broadcast",()=>Run(()=>{foreach(var (session,check) in targets)session.BroadcastTarget=check.IsChecked==true;Shell.SetBroadcast(true);DismissOverlay();return Task.CompletedTask;}),"primary"));
         ShowOverlay("One input. Explicit destinations.","Select the active terminal and at least one additional target. Production and replay sessions cannot be selected.",body,650);
     }
-    public void ShowSearch()
-    {
-        var session=Shell.ActiveSession;if(session is null)return;
-        var search=Ui.Input(null,"Find in terminal scrollback");var count=Ui.Text("Enter a search term",11,"Muted");
-        void Update(){session.Terminal.StartSearch(search.Text??"");count.Text=$"{session.Terminal.SearchSelectedDisplayIndex} of {session.Terminal.SearchTotal} matches";}
-        search.TextChanged+=(_,_)=>Update();
-        var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=10};actions.Children.Add(Ui.Button("Previous",null,()=>{session.Terminal.SelectPreviousSearchMatch();count.Text=$"{session.Terminal.SearchSelectedDisplayIndex} of {session.Terminal.SearchTotal}";}));actions.Children.Add(Ui.Button("Next",null,()=>{session.Terminal.SelectNextSearchMatch();count.Text=$"{session.Terminal.SearchSelectedDisplayIndex} of {session.Terminal.SearchTotal}";}));actions.Children.Add(count);
-        ShowOverlay("Find in "+Shell.ActiveDocument!.Title,"Search the native terminal buffer without modifying its contents.",Ui.Stack(search,actions),680);_onDismiss=()=>session.Terminal.EndSearch();Dispatcher.UIThread.Post(()=>search.Focus());
-    }
+    public void ShowSearch() => ShowAdvancedSearch();
     private void ShowDiagnostics()
     {
         var text=string.Join("\n",Shell.Sessions.All.Select(s=>$"{s.Id}  {s.Profile.DisplayName}\n  {s.State} · {s.Profile.Transport.TransportId} · {s.Terminal.Columns}x{s.Terminal.Rows} · native VT={s.Terminal.IsUsingNativeVtProcessor}\n  {s.Error}"))+"\n\n"+string.Join("\n",Shell.Events.Take(80));
@@ -176,7 +200,7 @@ public sealed partial class MainWindow
     }
     private void ShowAbout()
     {
-        var body=Ui.Stack(Ui.Text("Your command line, composed.",28),Ui.Text("Tessera · 0.1.0-alpha.1",13,"Accent"),Ui.Text("A native cross-platform workspace built with C#, Avalonia 12 and RoyalTerminal.\nObsidian, Porcelain, and Blueprint — the same considered design, in every mode.",12,"Muted"),Ui.Text("Drag terminal tabs to pane edges or centers. Use the command palette to discover every action. Connection secrets stay out of workspace files.",12,"Muted"),Ui.Button("Explore the commands","right",()=>ShowPalette(),"primary"));
+        var body=Ui.Stack(Ui.Text("Your command line, composed.",28),Ui.Text("Tessera · 0.2.0-preview.1",13,"Accent"),Ui.Text("A native cross-platform workspace built with C#, Avalonia 12 and RoyalTerminal.\nObsidian, Porcelain, and Blueprint — the same considered design, in every mode.",12,"Muted"),Ui.Text("Drag terminal tabs to pane edges or centers. Use the command palette to discover every action. Connection secrets stay out of workspace files.",12,"Muted"),Ui.Button("Explore the commands","right",()=>ShowPalette(),"primary"));
         foreach(var text in body.Children.OfType<TextBlock>())text.TextWrapping=TextWrapping.Wrap;
         ShowOverlay("tessera","A little less friction. A little more focus.",body,700);
     }

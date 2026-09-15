@@ -66,19 +66,32 @@ public sealed partial class MainWindow
     }
     private Control BuildHistory()
     {
-        var list=new StackPanel{Spacing=6};
-        if(Shell.CommandHistory.Count==0)
+        var query=Ui.Input(null,"Search ranked completed commands");query.MaxLength=2048;
+        var list=new StackPanel {Spacing=6};
+        void Refresh()
         {
-            list.Children.Add(Ui.Text("Your completed commands will appear here.",14));
-            list.Children.Add(CommandButton("shell-integration"));
-            var text=Ui.Text("History uses RoyalTerminal shell-integration events, not a keylogger. Enable shell integration in your shell; this list stays empty until completed command events are received.",11,"Muted");text.TextWrapping=TextWrapping.Wrap;list.Children.Add(text);
+            list.Children.Clear();var session=Shell.ActiveSession;
+            var matches=Shell.HistoryStore.Search(query.Text??"",session?.Profile.Id,session?.WorkingDirectory);
+            if(matches.Length==0)
+            {
+                list.Children.Add(Ui.Text("No matching completed commands.",13,"Muted"));list.Children.Add(CommandButton("shell-integration"));
+            }
+            foreach(var result in matches)
+            {
+                var entry=result.Entry;
+                var button=Ui.Button("",null,()=>Run(()=>
+                {
+                    if(!Safety.IsSafeCommandInsertion(entry.Command))throw new InvalidOperationException("Review this history entry manually.");
+                    var active=Shell.ActiveSession??throw new InvalidOperationException("Select a terminal first.");active.Send(entry.Command);active.Terminal.Focus();
+                    Shell.Report("History command inserted, not executed.");return Task.CompletedTask;
+                }));
+                button.Content=Ui.Row("85,*,90",Ui.Text(entry.Completed.ToLocalTime().ToString("MM-dd HH:mm"),9,"Faint"),Ui.Text(entry.Command,11),Ui.Text($"{result.Uses}× · exit {entry.ExitCode}",9,entry.ExitCode==0?"Accent":"Warning"));
+                button.HorizontalContentAlignment=HorizontalAlignment.Stretch;ToolTip.SetTip(button,entry.Host+" · "+entry.Directory);list.Children.Add(button);
+            }
         }
-        foreach(var entry in Shell.CommandHistory.Take(100))
-        {
-            var button=Ui.Button("",null,()=>Run(()=>{if(!Safety.IsSafeCommandInsertion(entry.CommandLine))throw new InvalidOperationException("This history entry requires manual review.");Shell.ActiveSession?.Send(entry.CommandLine);return Task.CompletedTask;}));
-            button.Content=Ui.Row("85,*,80",Ui.Text(entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss"),10,"Faint"),Ui.Text(entry.CommandLine,11),Ui.Text(entry.ExitCode is {} code?"exit "+code:"",10,entry.ExitCode==0?"Accent":"Warning"));button.HorizontalContentAlignment=HorizontalAlignment.Stretch;list.Children.Add(button);
-        }
-        return list;
+        query.TextChanged+=(_,_)=>Refresh();Refresh();
+        return Ui.Stack(Ui.Row("*,Auto,Auto",query,Ui.Button("Refresh","history",Refresh),CommandButton("clear-history",true)),
+            Ui.Text(Shell.Data.Preferences.PersistHistory?"Saved locally · ranked by recency, use, profile and directory":"Session-only · enable persistence in Preferences",10,"Faint"),list);
     }
     private Control BuildNotes()
     {
@@ -89,7 +102,8 @@ public sealed partial class MainWindow
     {
         var list=new StackPanel{Spacing=5};
         list.Children.Add(Ui.Button(_fileDirectory is null?"Choose a local folder":_fileDirectory,"folder",()=>Run(async()=>{var folders=await StorageProvider.OpenFolderPickerAsync(new(){Title="Browse local files",AllowMultiple=false});if(folders.FirstOrDefault()?.TryGetLocalPath() is {} path){_fileDirectory=path;BuildTools();}})));
-        if(_fileDirectory is null){list.Children.Add(Ui.Text("Local files only. Remote SFTP is not connected to this panel.",11,"Muted"));return list;}
+        list.Children.Add(CommandButton("sftp"));
+        if(_fileDirectory is null){list.Children.Add(Ui.Text("Choose a local folder, or open an SSH profile in the SFTP workspace.",11,"Muted"));return list;}
         if(System.IO.Directory.GetParent(_fileDirectory) is {} parent)list.Children.Add(Ui.Button("..","folder",()=>{_fileDirectory=parent.FullName;BuildTools();}));
         try
         {
@@ -121,7 +135,7 @@ public sealed partial class MainWindow
         var session=Shell.ActiveSession;var content=new StackPanel{Spacing=10};if(session is null){content.Children.Add(Ui.Text("Open a terminal or a recording first."));return content;}
         var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};
         actions.Children.Add(CommandButton("capture"));actions.Children.Add(CommandButton("save-capture"));actions.Children.Add(CommandButton("load-replay"));content.Children.Add(actions);
-        if(!session.IsReplay){content.Children.Add(Ui.Text(session.Capture.IsCaptureActive?"RECORDING · terminal input, output, and resize events are being captured.":"Capture a session, or open a RoyalTerminal / asciicast recording.",11,session.Capture.IsCaptureActive?"Warning":"Muted"));return content;}
+        if(!session.IsReplay){content.Children.Add(Ui.Text(session.Capture.IsCaptureActive?"RECORDING · output and resize events are checkpointed; raw input is excluded from saved recordings.":"Capture a session, or open a RoyalTerminal / asciicast recording.",11,session.Capture.IsCaptureActive?"Warning":"Muted"));return content;}
         _timeline=new Slider{Minimum=0,Maximum=Math.Max(1,session.Capture.ReplayDurationSeconds),Value=session.Capture.ReplayPositionSeconds};
         _timelineTime=Ui.Text("",10,"Muted");
         _timeline.PropertyChanged+=(_,e)=>{if(e.Property==Slider.ValueProperty&&!_updatingTimeline)session.Capture.SeekReplay(_timeline!.Value);};
@@ -139,18 +153,14 @@ public sealed partial class MainWindow
     private async Task CaptureAsync()
     {
         var session=Shell.ActiveSession;if(session is null)return;if(session.IsReplay)throw new InvalidOperationException("A replay is not a live capture source.");
-        if(session.Capture.IsCaptureActive){session.Capture.StopCapture();Shell.Report("Capture stopped · save it before closing the terminal");Shell.SetTool("Timeline");return;}
-        if(await ConfirmAsync("Record this terminal session?","Recordings contain terminal output AND input. Passwords, tokens, or other sensitive data can be captured. Recording is opt-in and stays in memory until you save it.","Start recording")){session.Capture.StartCapture();Shell.Report("Recording active");Shell.SetTool("Timeline");}
+        if(session.Capture.IsCaptureActive){session.Capture.StopCapture();await Shell.Recovery.CheckpointAsync(session);Shell.Report("Capture stopped · encrypted recovery retained");Shell.SetTool("Timeline");return;}
+        if(await ConfirmAsync("Record this terminal session?","Saved recordings include terminal output and resizing, but exclude raw input events. Secrets echoed in output can still be captured. Recovery snapshots are encrypted and checkpointed to private app storage every two seconds. Explicit exports are not encrypted.","Start recording")){await Shell.Recovery.StartAsync(session,_windowLifetime.Token);Shell.Report("Recording active · encrypted crash recovery enabled");Shell.SetTool("Timeline");}
     }
     private async Task SaveCaptureAsync()
     {
         var session=Shell.ActiveSession;if(session is null||!session.Capture.HasCapture)throw new InvalidOperationException("There is no capture to save.");
-        var file=await StorageProvider.SaveFilePickerAsync(new(){Title="Save recording",SuggestedFileName="session.rtcap.json",FileTypeChoices=[new("RoyalTerminal capture"){Patterns=["*.rtcap.json"]},new("Asciicast v3"){Patterns=["*.cast"]}]});
-        if(file?.TryGetLocalPath() is not {} path)return;
         var capture=session.Capture.GetCaptureSnapshot() ?? throw new InvalidOperationException("The capture is empty.");
-        if(path.EndsWith(".cast",StringComparison.OrdinalIgnoreCase))await TerminalCaptureSessionSerializer.SaveToFileAsync(capture,path,TerminalCaptureSessionFormats.AsciicastV3);
-        else await TerminalCaptureSessionSerializer.SaveToFileAsync(capture,path);
-        if(!OperatingSystem.IsWindows())File.SetUnixFileMode(path,UnixFileMode.UserRead|UnixFileMode.UserWrite);Shell.Report("Recording saved");
+        if(await ExportCaptureAsync(capture)) {await Shell.Recovery.MarkExportedAsync(session,capture);Shell.Report("Recording exported. New recording events continue to receive encrypted recovery checkpoints.");}
     }
     private async Task LoadReplayAsync()
     {
