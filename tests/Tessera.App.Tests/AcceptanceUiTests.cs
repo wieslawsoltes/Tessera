@@ -143,7 +143,7 @@ public sealed class AcceptanceUiTests
             var peer=ControlAutomationPeer.CreatePeerForElement(t)!;Assert.NotNull(peer);
             Assert.Equal(AutomationControlType.Document,peer.GetAutomationControlType());
             var value=Assert.IsAssignableFrom<IValueProvider>(peer);Assert.True(value.IsReadOnly);
-            Assert.Contains("tessera",value.Value,StringComparison.OrdinalIgnoreCase);Assert.True(value.Value.Length<=65536);
+            string output=Assert.IsType<string>(value.Value);Assert.Contains("tessera",output,StringComparison.OrdinalIgnoreCase);Assert.True(output.Length<=65536);
             Assert.Throws<InvalidOperationException>(()=>value.SetValue("echo never-execute\r"));
         }
         finally {w.CloseForTests();}

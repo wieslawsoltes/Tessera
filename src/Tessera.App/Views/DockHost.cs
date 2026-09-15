@@ -96,7 +96,8 @@ public sealed class DockHost : Grid
             var b = Ui.Button((doc.Pinned ? "• " : "") + doc.Title, "terminal", () => { if(!_dragging) _shell.Select(id); }, "tab");
             if(group.Active == id) b.Classes.Add("activeTab");
             ToolTip.SetTip(b, doc.Title + " · drag to a pane edge or center");
-            b.PointerPressed += (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragTrigger = e; _dragOrigin = e.GetPosition(this); } };
+            // Buttons consume pointer presses; observe the tunnel before their class handler.
+            b.AddHandler(PointerPressedEvent, (_, e) => { if(e.GetCurrentPoint(b).Properties.IsLeftButtonPressed) { _dragDocument = id; _dragTrigger = e; _dragOrigin = e.GetPosition(this); } }, RoutingStrategies.Tunnel, handledEventsToo: true);
             b.ContextMenu = _window.TabContextMenu(id);
             var tab = Ui.Row("Auto,Auto", b, Ui.IconButton("close", "Close " + doc.Title, () => _window.Run(() => _window.CloseTabAsync(id))));
             tabs.Children.Add(tab); tabBounds.Add((id,tab));

@@ -199,7 +199,7 @@ public sealed class SftpWorkspace : IAsyncDisposable
             {
                 created = true;
                 var privateAttributes = await _client.GetAttributesAsync(temporary,ct).ConfigureAwait(false);
-                privateAttributes.SetPermissions(384); // 0600 before any content is written.
+                privateAttributes.SetPermissions(600); // SSH.NET accepts octal digits as decimal, not the bit mask 0x180.
                 await Task.Run(()=>_client.SetAttributes(temporary,privateAttributes),ct).ConfigureAwait(false);
                 await CopyAsync(source, destination, source.Length, "Upload", progress, ct).ConfigureAwait(false);
                 await destination.FlushAsync(ct).ConfigureAwait(false);
