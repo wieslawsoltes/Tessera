@@ -48,7 +48,7 @@ jobs:
                   if(viaTransport)
                   {
                       transport.DataReceived += Data; transport.ProcessExited += code => exit = code;
-                      await transport.StartAsync(new PtyTransportOptions { Command = new TerminalCommandSpec(shell,argv), WorkingDirectory = folder, Dimensions = new(120,36) });
+                      await transport.StartAsync(new PtyTransportOptions(new TerminalCommandSpec(shell,argv), folder, null, new(120,36,960,720)));
                   }
                   else
                   {
