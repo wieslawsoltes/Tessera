@@ -36,12 +36,17 @@ public sealed class KnownHostRepository(string directory)
         try
         {
             var files = (SystemFilesOverride ?? KnownHostsSshHostKeyValidator.GetDefaultKnownHostsFiles()).Append(FilePath).ToArray();
-            foreach (var file in files)
-                if (File.Exists(file) && new FileInfo(file).Length > 4 * 1024 * 1024) throw new InvalidDataException("A known_hosts file exceeds the 4 MiB safety limit.");
-            var validator = new KnownHostsSshHostKeyValidator(files);
-            var status = validator.GetTrustStatus(endpoint, key);
-            if (status is SshKnownHostTrustStatus.Changed or SshKnownHostTrustStatus.Revoked or SshKnownHostTrustStatus.InvalidPresentedKey)
-                throw new InvalidOperationException($"SSH host key {status} for {endpoint.Host}:{endpoint.Port}. Verify the new fingerprint out of band and repair known_hosts explicitly.");
+            SshKnownHostTrustStatus InspectTrust()
+            {
+                foreach (var file in files)
+                    if (File.Exists(file) && new FileInfo(file).Length > 4 * 1024 * 1024)
+                        throw new InvalidDataException("A known_hosts file exceeds the 4 MiB safety limit.");
+                var current = new KnownHostsSshHostKeyValidator(files).GetTrustStatus(endpoint, key);
+                if (current is SshKnownHostTrustStatus.Changed or SshKnownHostTrustStatus.Revoked or SshKnownHostTrustStatus.InvalidPresentedKey)
+                    throw new InvalidOperationException($"SSH host key {current} for {endpoint.Host}:{endpoint.Port}. Verify the new fingerprint out of band and repair known_hosts explicitly.");
+                return current;
+            }
+            var status = InspectTrust();
             if (!string.IsNullOrWhiteSpace(expected)) return fingerprint == Normalize(expected);
             if (status == SshKnownHostTrustStatus.Trusted) return true;
             if (Prompt is null) return false;
@@ -51,9 +56,13 @@ public sealed class KnownHostRepository(string directory)
             var decision = await Prompt(challenge, timeout.Token).ConfigureAwait(false);
             timeout.Token.ThrowIfCancellationRequested();
             if (decision is not (HostKeyDecision.TrustOnce or HostKeyDecision.TrustAndSave)) return false;
+            // The dialog can stay open for two minutes. A concurrent revocation or key rotation
+            // must invalidate that earlier decision instead of being overwritten by stale trust.
+            if (InspectTrust() == SshKnownHostTrustStatus.Trusted) return true;
             if (decision == HostKeyDecision.TrustAndSave)
             {
-                string previous = File.Exists(FilePath) ? await File.ReadAllTextAsync(FilePath, token).ConfigureAwait(false) : "";
+                string previous = File.Exists(FilePath)
+                    ? Encoding.UTF8.GetString(await AtomicFile.ReadBytesAsync(FilePath, 4 * 1024 * 1024, token).ConfigureAwait(false)) : "";
                 string host = endpoint.Port == 22 ? endpoint.Host : $"[{endpoint.Host}]:{endpoint.Port}";
                 await AtomicFile.WriteAsync(FilePath, Encoding.UTF8.GetBytes(previous.TrimEnd() + "\n" + host + " " + key.HostKeyAlgorithm + " " + key.HostKeyBase64 + "\n"), token).ConfigureAwait(false);
             }
