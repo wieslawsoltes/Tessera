@@ -1,0 +1,31 @@
+name: Prepare original design transfer
+on:
+  push:
+    branches: [docs/original-design-artifacts]
+    paths: [.github/workflows/design-transfer-tool.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: schnaader/precomp-cpp
+          ref: a11b077425fb6f6c22fc39c3265a2c1af7333665
+          path: utility
+          persist-credentials: false
+      - name: Build pinned lossless compression utility
+        run: |
+          cmake -S utility -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build --parallel 4
+          mkdir kit
+          cp build/precomp kit/
+          tar -czf kit/source.tar.gz -C utility --exclude=.git .
+          sha256sum kit/precomp kit/source.tar.gz > kit/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: design-transfer-utility
+          path: kit
+          retention-days: 1
